@@ -30,10 +30,25 @@ def analizar_pmml_universal(ruta_archivo):
         print(f"  • Versión del Exportador: {app.get('version') if app is not None else 'No especificada'}")
         print(f"  • Fecha de Creación: {timestamp.text if timestamp is not None else 'No registrada'}\n")
 
+    # --- [2] MODIFICADO: PRIORIDAD A OUTPUTFIELDS Y DESPLIEGUE EN TABLAS COMPLETAS ---
     data_dict = root.find('pmml:DataDictionary', ns)
-    variables = []
+    variables_entrada = []
+    variables_salida = []
     target_var = "No detectado"
     
+    # 1. Extraer con prioridad las variables reales de salida de los bloques OutputField
+    for out_field in root.findall('.//pmml:OutputField', ns):
+        out_name = out_field.get('name')
+        out_datatype = out_field.get('dataType', 'No especificado')
+        out_feature = out_field.get('feature', 'Output')
+        
+        variables_salida.append({
+            'Variable de Salida': out_name,
+            'Tipo': f"Predicción ({out_feature})",
+            'Tipo de Dato': out_datatype
+        })
+
+    # 2. Procesar el DataDictionary para inputs y auditoría de la variable Target original
     if data_dict is not None:
         for field in data_dict.findall('pmml:DataField', ns):
             name = field.get('name')
@@ -42,18 +57,37 @@ def analizar_pmml_universal(ruta_archivo):
             
             if name.lower() in ['target', 'objetivo', 'clase', 'status']:
                 target_var = f"{name} [Tipo: {optype} | Dato: {datatype}]"
+                # Añadir el target a la tabla de salidas solo si no fue capturado en los OutputFields
+                if not any(d['Variable de Salida'] == name for d in variables_salida):
+                    variables_salida.append({
+                        'Variable de Salida': name,
+                        'Tipo': 'Target (Adicional)',
+                        'Tipo de Dato': datatype
+                    })
             else:
-                variables.append({'Variable': name, 'Tipo Operativo': optype, 'Tipo de Dato': datatype})
+                variables_entrada.append({
+                    'Variable de Entrada': name, 
+                    'Tipo Operativo': optype, 
+                    'Tipo de Dato': datatype
+                })
 
-    print("--- [2] CAMPOS DEL DICCIONARIO DE DATOS ---")
-    print(f"  • Variable de Salida (Target): {target_var}")
-    print(f"  • Total de Variables de Entrada (Predictoras): {len(variables)}")
+    print("--- [2] CAMPOS DEL DICCIONARIO DE DATOS Y SALIDAS ---")
+    print(f"  • Variable de Salida Base (Target): {target_var}")
+    print(f"  • Total de Variables de Entrada (Predictoras): {len(variables_entrada)}")
+    print(f"  • Total de Variables de Salida Detectadas: {len(variables_salida)}")
     
-    if variables:
-        df_vars = pd.DataFrame(variables)
-        print("\nMuestra de las primeras variables de entrada:")
-        print(df_vars.head(8).to_string(index=False))
-        print("... [Lista truncada para legibilidad] ...\n")
+    if variables_entrada:
+        df_vars = pd.DataFrame(variables_entrada)
+        print("\n--- TABLA DE VARIABLES DE ENTRADA (TODAS) ---")
+        print(df_vars.to_string(index=False))
+        print("-" * 50)
+
+    if variables_salida:
+        df_outputs = pd.DataFrame(variables_salida)
+        print("\n--- TABLA DE VARIABLES DE SALIDA (PRIORITARIAS) ---")
+        print(df_outputs.to_string(index=False))
+        print("-" * 50 + "\n")
+    # ---------------------------------------------------------------------------------
 
     print("--- [3] ARQUITECTURA Y FLUJO JERÁRQUICO DE MODELOS ---")
     
@@ -100,5 +134,5 @@ def analizar_pmml_universal(ruta_archivo):
         print("  • Modelos Basados en Regresión: No se encontraron bloques de coeficientes lineales.")
 
     print("\n" + "=" * 70)
-    print("                     FIN DEL ANÁLISIS COMPLETO                         ")
+    print("                    FIN DEL ANÁLISIS COMPLETO                         ")
     print("=" * 70)
