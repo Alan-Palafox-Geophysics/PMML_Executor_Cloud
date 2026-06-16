@@ -382,8 +382,24 @@ with tab3:
             df_analysis[col_sel_pwc] = pd.to_numeric(df_analysis[col_sel_pwc], errors='coerce')
             
             # Cálculo del error porcentual solicitado: (Python - PwC) / Python * 100
-            # Se añade un pequeño epsilon para evitar división por cero en registros de probabilidad nula
             df_analysis['error_porcentual'] = ((df_analysis[col_sel_py] - df_analysis[col_sel_pwc]) / (df_analysis[col_sel_py] + 1e-9)) * 100
+            
+            # --- LÓGICA DE ANOTACIÓN DINÁMICA DE NOTACIÓN (SI) ---
+            max_abs_error = df_analysis['error_porcentual'].abs().max()
+            
+            # Identificar el rango de escala de Plotly por defecto para agregar la aclaración estándar
+            if pd.isna(max_abs_error) or max_abs_error == 0:
+                nota_escala = ""
+            elif max_abs_error < 0.001:
+                nota_escala = "<br><sup>Nota de escala: 'µ' significa 1x10⁻⁶ = 0.000001 (0.000001% de error)</sup>"
+            elif max_abs_error < 1:
+                nota_escala = "<br><sup>Nota de escala: 'm' significa 1x10⁻³ = 0.001 (0.001% de error)</sup>"
+            elif max_abs_error >= 1000 and max_abs_error < 1000000:
+                nota_escala = "<br><sup>Nota de escala: 'k' significa 1x10³ = 1,000 (1,000% de error)</sup>"
+            elif max_abs_error >= 1000000:
+                nota_escala = "<br><sup>Nota de escala: 'M' significa 1x10⁶ = 1,000,000 (1,000,000% de error)</sup>"
+            else:
+                nota_escala = "" # Rango normal entre 1 y 999 (No se añade sufijo SI)
             
             # Evaluar si se especificó una segmentación válida para asignar colores
             color_param = None if col_segmentacion == "Ninguna" else col_segmentacion
@@ -397,7 +413,7 @@ with tab3:
                     x=col_sel_py, 
                     y="error_porcentual", 
                     color=color_param,
-                    title="Análisis de Desviaciones: Error Porcentual vs Probabilidad",
+                    title=f"Análisis de Desviaciones: Error Porcentual vs Probabilidad{nota_escala}",
                     labels={col_sel_py: 'Valor de la Variable (Probabilidad Python)', 'error_porcentual': 'Error Porcentual (%)'},
                     color_discrete_sequence=['#FF4B4B'] if color_param is None else None,
                     opacity=0.6
