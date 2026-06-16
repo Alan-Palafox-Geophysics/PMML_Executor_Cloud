@@ -372,25 +372,45 @@ with tab3:
             col_sel_py = st.selectbox("Seleccione columna de probabilidad Python", options=prob_cols_py)
             col_sel_pwc = st.selectbox("Seleccione columna de probabilidad Power Curve (PwC)", options=prob_cols_pwc)
             
+            # Menú desplegable para columna de segmentación solicitado debajo de los de probabilidad
+            col_segmentacion = st.selectbox(
+                "Seleccione columna de segmentación (Opcional, dejar en 'Ninguna' por default)", 
+                options=["Ninguna"] + df_analysis.columns.tolist()
+            )
+            
             df_analysis[col_sel_py] = pd.to_numeric(df_analysis[col_sel_py], errors='coerce')
             df_analysis[col_sel_pwc] = pd.to_numeric(df_analysis[col_sel_pwc], errors='coerce')
-            df_analysis['residuo'] = df_analysis[col_sel_py] - df_analysis[col_sel_pwc]
+            
+            # Cálculo del error porcentual solicitado: (Python - PwC) / Python * 100
+            # Se añade un pequeño epsilon para evitar división por cero en registros de probabilidad nula
+            df_analysis['error_porcentual'] = ((df_analysis[col_sel_py] - df_analysis[col_sel_pwc]) / (df_analysis[col_sel_py] + 1e-9)) * 100
+            
+            # Evaluar si se especificó una segmentación válida para asignar colores
+            color_param = None if col_segmentacion == "Ninguna" else col_segmentacion
             
             g_col1, g_col2 = st.columns(2)
             with g_col1:
                 st.subheader("Distribución de Residuos (Errores)")
-                fig_hist = px.histogram(
-                    df_analysis, x="residuo", nbins=50, 
-                    title="Frecuencia de Desviaciones (Python - PwC)",
-                    labels={'residuo': 'Magnitud del Error Residuo'},
-                    color_discrete_sequence=['#FF4B4B']
+                # Gráfico modificado para reflejar análisis de residuo en error porcentual (Y) vs Variable (X)
+                fig_hist = px.scatter(
+                    df_analysis, 
+                    x=col_sel_py, 
+                    y="error_porcentual", 
+                    color=color_param,
+                    title="Análisis de Desviaciones: Error Porcentual vs Probabilidad",
+                    labels={col_sel_py: 'Valor de la Variable (Probabilidad Python)', 'error_porcentual': 'Error Porcentual (%)'},
+                    color_discrete_sequence=['#FF4B4B'] if color_param is None else None,
+                    opacity=0.6
                 )
+                # Línea horizontal en cero para observar la desviación de los datos
+                fig_hist.add_hline(y=0, line_dash="dash", line_color="black", annotation_text="Línea de cero error")
                 st.plotly_chart(fig_hist, use_container_width=True)
                 
             with g_col2:
                 st.subheader("Gráfico de Dispersión e Identidad")
                 fig_scatter = px.scatter(
                     df_analysis, x=col_sel_py, y=col_sel_pwc,
+                    color=color_param,
                     title="Correlación Exacta de Probabilidades de Riesgo",
                     labels={col_sel_py: 'Eje Python + PMML', col_sel_pwc: 'Eje Power Curve'},
                     opacity=0.6
@@ -400,7 +420,8 @@ with tab3:
                 fig_scatter.add_trace(go.Scatter(
                     x=[min_val, max_val], y=[min_val, max_val], 
                     mode='lines', name='Línea Ideal de 45°', 
-                    line=dict(dash='dash', color='gray')
+                    line=dict(dash='dash', color='gray'),
+                    showlegend=True if color_param is None else False
                 ))
                 st.plotly_chart(fig_scatter, use_container_width=True)
                 
