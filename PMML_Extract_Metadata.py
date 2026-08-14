@@ -30,7 +30,7 @@ def analizar_pmml_universal(ruta_archivo):
         print(f"  • Versión del Exportador: {app.get('version') if app is not None else 'No especificada'}")
         print(f"  • Fecha de Creación: {timestamp.text if timestamp is not None else 'No registrada'}\n")
 
-    # --- [2] MODIFICADO: PRIORIDAD A OUTPUTFIELDS Y DESPLIEGUE EN TABLAS COMPLETAS ---
+    # --- [2] DICCIONARIO DE DATOS Y SALIDAS GLOBALES ---
     data_dict = root.find('pmml:DataDictionary', ns)
     variables_entrada = []
     variables_salida = []
@@ -57,7 +57,6 @@ def analizar_pmml_universal(ruta_archivo):
             
             if name.lower() in ['target', 'objetivo', 'clase', 'status']:
                 target_var = f"{name} [Tipo: {optype} | Dato: {datatype}]"
-                # Añadir el target a la tabla de salidas solo si no fue capturado en los OutputFields
                 if not any(d['Variable de Salida'] == name for d in variables_salida):
                     variables_salida.append({
                         'Variable de Salida': name,
@@ -87,52 +86,94 @@ def analizar_pmml_universal(ruta_archivo):
         print("\n--- TABLA DE VARIABLES DE SALIDA (PRIORITARIAS) ---")
         print(df_outputs.to_string(index=False))
         print("-" * 50 + "\n")
-    # ---------------------------------------------------------------------------------
+        
+    # --- [3] TRANSFORMACIONES GLOBALES (FEATURE ENGINEERING) ---
+    print("--- [3] TRANSFORMACIONES GLOBALES (Feature Engineering) ---")
+    transformaciones = []
+    for derived in root.findall('.//pmml:TransformationDictionary/pmml:DerivedField', ns):
+        field_ref = derived.find('pmml:FieldRef', ns)
+        ref_name = field_ref.get('field') if field_ref is not None else 'Sin Referencia'
+        transformaciones.append({
+            'Variable Derivada': derived.get('name'),
+            'Calculada a partir de': ref_name,
+            'Tipo de Dato': derived.get('dataType', 'N/A')
+        })
+        
+    if transformaciones:
+        df_trans = pd.DataFrame(transformaciones)
+        print(df_trans.to_string(index=False))
+    else:
+        print("  • No se detectaron transformaciones globales.")
+    print("-" * 50 + "\n")
 
-    print("--- [3] ARQUITECTURA Y FLUJO JERÁRQUICO DE MODELOS ---")
+    # --- [4] ARQUITECTURA, FLUJOS Y SUBPROCESOS (RECURSIVO) ---
+    print("--- [4] TRAZABILIDAD DE MODELOS Y SUBPROCESOS (Flujo de Datos) ---")
     
-    mining_models = root.findall('.//pmml:MiningModel', ns)
-    regression_models = root.findall('.//pmml:RegressionModel', ns)
-    tree_models = root.findall('.//pmml:TreeModel', ns)
-    
-    if len(mining_models) > 0:
-        print(f"  [Estructura Detectada]: Ensamble Complejo / Pipeline de Múltiples Capas.")
-        for idx, m_model in enumerate(mining_models, 1):
-            alg_name = m_model.get('algorithmName', 'No definido')
-            func_name = m_model.get('functionName', 'No definida')
-            print(f"    -> Capa Lógica {idx}: {alg_name} (Función Objetivo: {func_name})")
+    def rastrear_modelo(nodo_modelo, nivel=1, nombre_segmento="Modelo Principal"):
+        tipo_nodo = nodo_modelo.tag.split('}')[-1]
+        algoritmo = nodo_modelo.get('algorithmName', tipo_nodo)
+        funcion = nodo_modelo.get('functionName', 'No Definida')
+        
+        print(f"\n{'-'*15} Nivel {nivel} | Instancia: {nombre_segmento} | Algoritmo: {algoritmo} {'-'*15}")
+        print(f" -> Función objetivo del nodo: {funcion}")
+        
+        # 1. ENTRADAS a este subproceso
+        schema = nodo_modelo.find('pmml:MiningSchema', ns)
+        if schema is not None:
+            entradas = [f.get('name') for f in schema.findall('pmml:MiningField', ns)]
+            print(f" [ENTRADAS] El nodo ingiere {len(entradas)} variables:")
+            for e in entradas:
+                print(f"    * {e}")
+        else:
+            print(" [ENTRADAS] Variables heredadas del nodo padre.")
+
+        # 2. Transformaciones locales en este subproceso
+        locales = nodo_modelo.find('pmml:LocalTransformations', ns)
+        if locales is not None:
+            trans_locales = locales.findall('pmml:DerivedField', ns)
+            print(f" [PROCESO] Se aplican {len(trans_locales)} transformaciones matemáticas internas.")
+
+        # 3. SALIDAS de este subproceso
+        output = nodo_modelo.find('pmml:Output', ns)
+        if output is not None:
+            salidas = output.findall('pmml:OutputField', ns)
+            print(f" [SALIDAS] El nodo genera {len(salidas)} variables hacia la siguiente capa:")
+            for s in salidas:
+                print(f"    * {s.get('name')} (Feature: {s.get('feature', 'N/A')}, Tipo: {s.get('dataType', 'N/A')})")
+        else:
+            print(" [SALIDAS] Output estándar del algoritmo (ej. valor en bruto / score final).")
+
+        # 4. Recursividad (Ensamble / Bifurcación)
+        segmentacion = nodo_modelo.find('pmml:Segmentation', ns)
+        if segmentacion is not None:
+            metodo = segmentacion.get('multipleModelMethod', 'Desconocido')
+            segmentos_hijos = segmentacion.findall('pmml:Segment', ns)
+            print(f"\n [BIFURCACIÓN] El nodo divide el cálculo en {len(segmentos_hijos)} sub-modelos. Método: {metodo}")
             
-            segmentation = m_model.find('.//pmml:Segmentation', ns)
-            if segmentation is not None:
-                method = segmentation.get('multipleModelMethod', 'Desconocido')
-                print(f"       • Método de Enlace de la Capa: '{method}'")
-    else:
-        print("  [Estructura Detectada]: Pipeline Lineal Estándar de una sola capa.")
+            # Prevenir spam visual si son Boosting Trees
+            if metodo == 'sum' and len(segmentos_hijos) > 10:
+                print(f"    -> [!] ATENCIÓN: Se detectaron {len(segmentos_hijos)} iteraciones sumativas (Boosted Trees).")
+                print("    -> Se omite el desglose árbol por árbol para mantener legible la estructura de variables.")
+            else:
+                for idx, seg in enumerate(segmentos_hijos):
+                    hijo = None
+                    for etiqueta in ['pmml:MiningModel', 'pmml:RegressionModel', 'pmml:TreeModel']:
+                        hijo = seg.find(etiqueta, ns)
+                        if hijo is not None:
+                            break
+                    if hijo is not None:
+                        rastrear_modelo(hijo, nivel + 1, f"Segmento ID {seg.get('id', str(idx+1))}")
 
-    print("\n--- [4] AUDITORÍA DE ALGORITMOS E ITERACIONES ---")
-    
-    if len(tree_models) > 0:
-        print(f"  • Algoritmos de Árboles (XGBoost / Árboles de Decisión / RF): DETECTADO")
-        print(f"    -> Número total de iteraciones estimadas (Árboles individuales / Boosts): {len(tree_models)}")
-        func_arboles = set([t.get('functionName') for t in tree_models])
-        print(f"    -> Naturaleza funcional de los árboles internos: {list(func_arboles)}")
+    # Ejecutar la búsqueda jerárquica desde el nodo principal
+    raiz_modelo = root.find('.//pmml:MiningModel', ns)
+    if raiz_modelo is not None:
+        rastrear_modelo(raiz_modelo)
     else:
-        print("  • Algoritmos de Árboles: No se encontraron sub-estructuras TreeModel.")
-
-    if len(regression_models) > 0:
-        print(f"  • Modelos Basados en Regresión (Logística / Lineal / Scorecards WoE): DETECTADO")
-        print(f"    -> Cantidad total de bloques de regresión activos: {len(regression_models)}")
-        for idx, r_model in enumerate(regression_models, 1):
-            r_alg = r_model.get('algorithmName', 'Regresión Estándar')
-            r_func = r_model.get('functionName', 'No definida')
-            print(f"    -> Bloque {idx}: '{r_alg}' optimizado para '{r_func}'")
-            
-            intercept = r_model.find('.//pmml:RegressionTable', ns)
-            if intercept is not None and intercept.get('intercept') is not None:
-                print(f"       • Intercepto base calculado (Bias): {intercept.get('intercept')}")
-    else:
-        print("  • Modelos Basados en Regresión: No se encontraron bloques de coeficientes lineales.")
+        print("\n  No se encontró una estructura MiningModel en el archivo.")
 
     print("\n" + "=" * 70)
     print("                    FIN DEL ANÁLISIS COMPLETO                         ")
     print("=" * 70)
+
+# Para usarlo:
+# analizar_pmml_universal('stacking_Poco_Vinculados.pmml')
