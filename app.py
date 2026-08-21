@@ -2,10 +2,13 @@ import os
 import io
 import sys
 import json
+import base64  # <--- NUEVO
+import zlib    # <--- NUEVO
 import pandas as pd
 import streamlit as st
 import plotly.express as px
 import plotly.graph_objects as go
+import streamlit.components.v1 as components  # <--- Añadido para renderizar diagramas visuales
 
 # -----------------------------------------------------------------------------
 # IMPORTACIÓN COHERENTE DE TUS MÓDULOS DE BACKEND
@@ -64,7 +67,18 @@ if not st.session_state.authenticated:
     st.stop()
 
 # -----------------------------------------------------------------------------
-# INTERFAZ PRINCIPAL - DISEÑO DE 4 PESTAÑAS
+# NAVEGACIÓN EN BARRA LATERAL (CONTROL EXCLUSIVO DE TAB 1)
+# -----------------------------------------------------------------------------
+with st.sidebar:
+    st.header("⚙️ Procesos PMML")
+    st.info("Este menú cambia la vista dentro de la pestaña **🚀 Ejecución PMML**.")
+    opcion_pmml = st.radio(
+        "Seleccione un submódulo:",
+        ["1.1 PMML - Metadata", "1.2 Scoring Único", "1.3 Scoring Múltiple"]
+    )
+
+# -----------------------------------------------------------------------------
+# INTERFAZ PRINCIPAL - DISEÑO DE 4 PESTAÑAS (INTACTAS)
 # -----------------------------------------------------------------------------
 st.title("🛡️ PMML & Power Curve Analytics Workspace")
 st.caption("Entorno unificado de validación, scoring masivo y conciliación de matrices de riesgo.")
@@ -76,55 +90,250 @@ tab1, tab2, tab3, tab4 = st.tabs([
     "⏳ Próximamente"
 ])
 
+# --- Función Auxiliar para Generar Tablas Markdown Nativas ---
+def dataframe_to_markdown(df):
+    if df.empty: return "_Sin datos registrados_\n"
+    cols = df.columns.tolist()
+    header = "| " + " | ".join(cols) + " |"
+    separator = "| " + " | ".join(["---"] * len(cols)) + " |"
+    rows = []
+    for _, row in df.iterrows():
+        rows.append("| " + " | ".join([str(x) for x in row.values]) + " |")
+    return "\n".join([header, separator] + rows) + "\n\n"
+
 # -----------------------------------------------------------------------------
-# PESTAÑA 1: EJECUCIÓN PMML (INTEGRACIÓN DE TUS MÓDULOS)
+# PESTAÑA 1: EJECUCIÓN PMML (REFACTORIZADA SEGÚN LA BARRA LATERAL)
 # -----------------------------------------------------------------------------
 with tab1:
     st.header("Módulos de Ejecución e Inferencia Nativos")
     
     # --- SECCIÓN 1.1: PMML - METADATA ---
-    with st.expander("📝 1.1 PMML - Metadata", expanded=True):
-        st.subheader("Extracción de Metadatos y Firma del Modelo")
+    if opcion_pmml == "1.1 PMML - Metadata":
+        st.subheader("📝 1.1 Extracción de Metadatos y Arquitectura")
         meta_pmml = st.file_uploader("Subir archivo PMML para extracción", type=["pmml", "xml"], key="meta_pmml")
         
-        is_meta_disabled = meta_pmml is None
-        
-        if st.button("Ejecutar Extracción", disabled=is_meta_disabled, key="btn_meta"):
-            with st.spinner("Procesando estructura XML del archivo PMML..."):
+        if st.button("Analizar PMML y Generar Dashboard", disabled=(meta_pmml is None), key="btn_meta"):
+            with st.spinner("Decodificando XML, renderizando diagramas y mapeando variables..."):
                 temp_pmml_path = f"temp_meta_{meta_pmml.name}"
                 try:
                     with open(temp_pmml_path, "wb") as f:
                         f.write(meta_pmml.getbuffer())
                     
-                    # Redirigir stdout para capturar los prints de analizar_pmml_universal
-                    old_stdout = sys.stdout
-                    sys.stdout = buffer = io.StringIO()
+                    pmml_data = meta_extractor.analizar_pmml_estructurado(temp_pmml_path)
+                    st.success("✅ Estructura del modelo mapeada exitosamente.")
                     
-                    meta_extractor.analizar_pmml_universal(temp_pmml_path)
+                    header_info = pmml_data.get("header", {})
+                    st.info(f"""
+                    **📋 Ficha Técnica del Modelo (PMML)**
+                    * **Aplicación / Exportador:** `{header_info.get('Aplicacion', 'N/A')}`
+                    * **Versión de SDK:** `{header_info.get('Version', 'N/A')}`
+                    * **Fecha de Compilación:** `{header_info.get('Fecha', 'N/A')}`
+                    * **Variable Target Detectada:** `{header_info.get('Target', 'N/A')}`
+                    """)
                     
-                    sys.stdout = old_stdout
-                    log_content = buffer.getvalue()
+                    df_in = pd.DataFrame(pmml_data.get("inputs", []))
+                    df_out = pd.DataFrame(pmml_data.get("outputs", []))
+                    df_trans = pd.DataFrame(pmml_data.get("transformations", []))
                     
-                    st.success("✅ Análisis completado con éxito.")
-                    st.text_area("Vista previa del log de auditoría:", value=log_content, height=250)
+                    col_in, col_out = st.columns(2)
+                    with col_in:
+                        st.markdown("#### 🟢 Variables de Entrada (Inputs)")
+                        if not df_in.empty:
+                            styled_in = df_in.style.set_properties(**{
+                                'background-color': '#e8f5e9', 'color': '#1b5e20', 'border-color': 'white'})
+                            st.dataframe(styled_in, use_container_width=True, hide_index=True)
+                        else:
+                            st.warning("No se detectaron variables de entrada explícitas.")
+
+                    with col_out:
+                        st.markdown("#### 🟡 Variables de Salida (Outputs)")
+                        if not df_out.empty:
+                            styled_out = df_out.style.set_properties(**{
+                                'background-color': '#fffde7', 'color': '#f57f17', 'border-color': 'white'})
+                            st.dataframe(styled_out, use_container_width=True, hide_index=True)
+                        else:
+                            st.warning("No se detectaron variables de salida explícitas.")
+
+                    # --- 3. DIAGRAMA DE FLUJO VERTICAL RENDERIZADO GRÁFICAMENTE ---
+                    st.markdown("---")
+                    st.markdown("#### 🔄 Arquitectura y Ciclo de Vida del Modelo")
                     
-                    st.download_button(
-                        label="📥 Descargar Log de Auditoría (.txt)",
-                        data=log_content,
-                        file_name=f"log_metadata_{meta_pmml.name}.txt",
-                        mime="text/plain",
-                        use_container_width=True
-                    )
+                    # Generación del string Mermaid
+                    mermaid_code = "graph TD\n"
+                    mermaid_code += "    Start([Inicio]) --> Inputs[\"Ingesta de Features\"]\n"
+                    mermaid_code += "    Inputs --> Transform[\"Transformaciones de Datos\"]\n"
+                    
+                    flow_steps = pmml_data.get("flow", [])
+                    prev_node = "Transform"
+                    
+                    for idx, paso in enumerate(flow_steps):
+                        node_id = f"ModelStep_{idx}"
+                        instancia = str(paso.get('instancia', '')).replace('"', "'")
+                        algoritmo = str(paso.get('algoritmo', '')).replace('"', "'")
+                        label = f"{instancia}<br>({algoritmo})"
+                        mermaid_code += f"    {prev_node} --> {node_id}[\"{label}\"]\n"
+                        prev_node = node_id
+                        
+                    mermaid_code += f"    {prev_node} --> Outputs([\"Cálculo de Scoring y Salida\"])\n"
+                    
+                    # Uso de componentes HTML para renderizar Mermaid Y añadir botón de descarga interno
+                    mermaid_html = f"""
+                    <!DOCTYPE html>
+                    <html>
+                    <head>
+                        <script type="module">
+                            import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.esm.min.mjs';
+                            mermaid.initialize({{ startOnLoad: true, theme: 'default', securityLevel: 'loose' }});
+                            
+                            // Función JS inyectada para forzar la descarga de la imagen SVG
+                            window.downloadSVG = function() {{
+                                const svg = document.querySelector('.mermaid svg');
+                                if (!svg) return;
+                                
+                                svg.style.backgroundColor = 'white'; // Fondo blanco para evitar transparencias
+                                const serializer = new XMLSerializer();
+                                let source = serializer.serializeToString(svg);
+                                
+                                const blob = new Blob([source], {{type: "image/svg+xml;charset=utf-8"}});
+                                const url = URL.createObjectURL(blob);
+                                const a = document.createElement("a");
+                                a.href = url;
+                                a.download = "diagrama_arquitectura.svg";
+                                document.body.appendChild(a);
+                                a.click();
+                                document.body.removeChild(a);
+                            }};
+                        </script>
+                        <style>
+                            .btn-descarga {{
+                                display: block; margin: 10px auto; padding: 10px 20px;
+                                background-color: #FF4B4B; color: white; border: none;
+                                border-radius: 5px; font-family: sans-serif; font-weight: bold;
+                                cursor: pointer; text-align: center; width: 300px;
+                            }}
+                            .btn-descarga:hover {{ background-color: #ff3333; }}
+                        </style>
+                    </head>
+                    <body style="background-color: transparent;">
+                        <button class="btn-descarga" onclick="window.downloadSVG()">📥 Descargar Diagrama (SVG)</button>
+                        <div class="mermaid" style="display: flex; justify-content: center; margin-top: 15px; font-family: sans-serif;">
+{mermaid_code}
+                        </div>
+                    </body>
+                    </html>
+                    """
+                    # Renderizamos expandiendo el contenedor para que quepa el botón y el diagrama
+                    components.html(mermaid_html, height=750, scrolling=True)
+
+                    # --- 4. ARMADO DEL DOCUMENTO TXT (COMPLETO) ---
+                    txt_text = "=" * 70 + "\n"
+                    txt_text += f" LOG DE AUDITORÍA Y ARQUITECTURA PMML: {meta_pmml.name}\n"
+                    txt_text += "=" * 70 + "\n\n"
+                    
+                    txt_text += "--- [1] FICHA TÉCNICA ---\n"
+                    txt_text += f"Aplicación : {header_info.get('Aplicacion', 'N/A')}\n"
+                    txt_text += f"Versión    : {header_info.get('Version', 'N/A')}\n"
+                    txt_text += f"Fecha      : {header_info.get('Fecha', 'N/A')}\n"
+                    txt_text += f"Target     : {header_info.get('Target', 'N/A')}\n\n"
+                    
+                    txt_text += "--- [2] VARIABLES DE ENTRADA ---\n"
+                    txt_text += df_in.to_string(index=False) + "\n\n" if not df_in.empty else "Sin variables de entrada explícitas.\n\n"
+                    
+                    txt_text += "--- [3] VARIABLES DE SALIDA ---\n"
+                    txt_text += df_out.to_string(index=False) + "\n\n" if not df_out.empty else "Sin variables de salida explícitas.\n\n"
+                    
+                    txt_text += "--- [4] TRANSFORMACIONES ---\n"
+                    txt_text += df_trans.to_string(index=False) + "\n\n" if not df_trans.empty else "Sin transformaciones explícitas.\n\n"
+                    
+                    txt_text += "--- [5] FLUJO COMPLETO DE PROCESOS (Niveles y Algoritmos) ---\n"
+                    for paso in flow_steps:
+                        txt_text += f"-> Nivel {paso.get('nivel', 'N/A')} | Instancia: {paso.get('instancia', 'N/A')} | Algoritmo: {paso.get('algoritmo', 'N/A')}\n"
+                    txt_text += "\n"
+                    
+                    txt_text += "-" * 70 + "\n"
+                    txt_text += "TRAZAS ADICIONALES DEL BACKEND\n"
+                    txt_text += "-" * 70 + "\n"
+                    txt_text += pmml_data.get("raw_log", "")
+
+                    # --- 5. ARMADO DEL DOCUMENTO MD (COMPLETO) ---
+                    md_text = f"# 📊 Documentación de Modelo: {meta_pmml.name}\n\n"
+                    md_text += f"> Fecha de extracción: {header_info.get('Fecha', 'N/A')}\n\n"
+                    
+                    md_text += "## 📋 1. Ficha Técnica\n"
+                    md_text += f"- **Aplicación:** {header_info.get('Aplicacion', 'N/A')}\n"
+                    md_text += f"- **Versión:** {header_info.get('Version', 'N/A')}\n"
+                    md_text += f"- **Target:** {header_info.get('Target', 'N/A')}\n\n"
+                    
+                    md_text += "## 🟢 2. Variables de Entrada (Features)\n"
+                    md_text += dataframe_to_markdown(df_in)
+                    
+                    md_text += "## 🟡 3. Variables de Salida (Scores)\n"
+                    md_text += dataframe_to_markdown(df_out)
+                    
+                    md_text += "## 🛠️ 4. Transformaciones (Feature Engineering)\n"
+                    md_text += dataframe_to_markdown(df_trans)
+                    
+                    md_text += "## 🔄 5. Flujo de Procesos (Auditoría)\n\n"
+                    
+                    # --- LÓGICA PARA RENDERIZAR LA IMAGEN EN MARKDOWN ---
+                    # Limpiamos saltos de línea HTML para compatibilidad
+                    mermaid_code_clean = mermaid_code.replace("<br>", " ")
+                    # Comprimimos y codificamos el texto en base64 para enviarlo a la API de Kroki
+                    compressed_mermaid = zlib.compress(mermaid_code_clean.encode('utf-8'), 9)
+                    b64_mermaid = base64.urlsafe_b64encode(compressed_mermaid).decode('utf-8')
+                    # Generamos una URL que devuelve la imagen vectorial al instante
+                    img_url = f"https://kroki.io/mermaid/svg/{b64_mermaid}"
+                    
+                    # Incrustamos la imagen real en el Markdown
+                    md_text += f"![Diagrama de Arquitectura del Modelo]({img_url})\n\n"
+                    
+                    # Agregamos la tabla de respaldo
+                    md_text += "### Detalle de Capas\n"
+                    md_text += "| Nivel | Instancia | Algoritmo |\n|---|---|---|\n"
+                    for paso in flow_steps:
+                        md_text += f"| Nivel {paso.get('nivel', 'N/A')} | {paso.get('instancia', 'N/A')} | {paso.get('algoritmo', 'N/A')} |\n"
+                    md_text += "\n\n"
+
+                    st.markdown("---")
+                    st.markdown("#### 👁️ Vista Previa de la Documentación en formato Markdown")
+                    st.info("El documento exportado ahora procesa el diagrama a través de un renderizador vectorial nativo. Cuando lo abras o previsualices, verás la imagen directamente.")
+                    
+                    with st.container(border=True):
+                        # Se renderizará la imagen en tu app de Streamlit y en el archivo descargado
+                        st.markdown(md_text, unsafe_allow_html=True)
+
+                    # BOTONES DE DESCARGA DE STREAMLIT
+                    st.markdown("---")
+                    st.markdown("#### 💾 Opciones de Exportación")
+                    dl_col1, dl_col2 = st.columns(2)
+                    
+                    with dl_col1:
+                        st.download_button(
+                            label="📄 Descargar Auditoría Completa (.txt)",
+                            data=txt_text,
+                            file_name=f"log_metadata_{meta_pmml.name}.txt",
+                            mime="text/plain",
+                            use_container_width=True
+                        )
+                        
+                    with dl_col2:
+                        st.download_button(
+                            label="📝 Descargar Documentación Estructurada (.md)",
+                            data=md_text,
+                            file_name=f"doc_riesgos_{meta_pmml.name}.md",
+                            mime="text/markdown",
+                            use_container_width=True
+                        )
                     
                 except Exception as e:
-                    st.error(f"Fallo al ejecutar la extracción de metadatos: {str(e)}")
+                    st.error(f"Fallo crítico en el renderizado del PMML: {str(e)}")
                 finally:
                     if os.path.exists(temp_pmml_path):
                         os.remove(temp_pmml_path)
 
     # --- SECCIÓN 1.2: EVALUACIÓN DE PMML ÚNICO ---
-    with st.expander("🎯 1.2 Evaluación de PMML Único", expanded=False):
-        st.subheader("Scoring Unificado (Single Model)")
+    elif opcion_pmml == "1.2 Scoring Único":
+        st.subheader("🎯 1.2 Evaluación de PMML Único")
         single_pmml = st.file_uploader("Subir archivo .pmml del modelo", type=["pmml"], key="single_pmml")
         single_data = st.file_uploader("Subir conjunto de datos a evaluar (.csv)", type=["csv"], key="single_data")
         
@@ -157,19 +366,17 @@ with tab1:
                     if os.path.exists(t_pmml): os.remove(t_pmml)
                     if os.path.exists(t_data): os.remove(t_data)
 
-    # --- SECCIÓN 1.3: EVALUACIÓN DE PMML MÚLTIPLE (CARGA DINÁMICA) ---
-    with st.expander("🗂️ 1.3 Evaluación de PMML Múltiple", expanded=False):
-        st.subheader("Scoring Segmentado y Enrutamiento Multimodelo")
+    # --- SECCIÓN 1.3: EVALUACIÓN DE PMML MÚLTIPLE ---
+    elif opcion_pmml == "1.3 Scoring Múltiple":
+        st.subheader("🗂️ 1.3 Scoring Segmentado y Enrutamiento Multimodelo")
         
         multi_json = st.file_uploader("1. Subir archivo de distribución de segmentos (.json)", type=["json"], key="multi_json")
         
-        # Diccionario intermedio para mapear la carga secuencial de PMMLs
         pmml_upload_pointers = {}
         json_config_dict = None
         
         if multi_json:
             try:
-                # Leer la estructura del archivo JSON en memoria de forma segura
                 json_config_dict = json.load(multi_json)
                 pmml_mapping = json_config_dict.get("pmml_files", {})
                 
@@ -177,7 +384,6 @@ with tab1:
                     st.error("El archivo JSON no tiene una estructura válida con la llave 'pmml_files'.")
                 else:
                     st.markdown("##### 📦 Carga Secuencial de Modelos PMML Requeridos:")
-                    # Iterar respetando el orden secuencial definido por el JSON
                     for segment, pmml_filename in pmml_mapping.items():
                         pmml_upload_pointers[segment] = st.file_uploader(
                             f"Segmento: **{segment}** ➡️ Subir archivo: `{pmml_filename}`", 
@@ -191,7 +397,6 @@ with tab1:
         multi_data = st.file_uploader("2. Subir dataset matriz a evaluar (.csv)", type=["csv"], key="multi_data")
         segment_var = st.text_input("3. Nombre exacto de la variable de enrutamiento (Segmento)", placeholder="Ej: segmento_id")
         
-        # Validar si todos los archivos de los segmentos del JSON han sido subidos correctamente
         all_pmmls_uploaded = False
         if json_config_dict and pmml_upload_pointers:
             all_pmmls_uploaded = all(file is not None for file in pmml_upload_pointers.values())
@@ -205,11 +410,9 @@ with tab1:
                 created_temp_files = []
                 
                 try:
-                    # Crear en la raíz un directorio temporal ficticio para el backend compatible con el JSON
                     os.makedirs("temp_pmmls", exist_ok=True)
                     json_config_dict["general_path"] = "temp_pmmls"
                     
-                    # Escribir los bytes de cada PMML subido dinámicamente usando el nombre exigido en la firma del JSON
                     for segment, file_obj in pmml_upload_pointers.items():
                         target_filename = json_config_dict["pmml_files"][segment]
                         temp_pmml_route = os.path.join("temp_pmmls", target_filename)
@@ -217,7 +420,6 @@ with tab1:
                             f.write(file_obj.getbuffer())
                         created_temp_files.append(temp_pmml_route)
                     
-                    # Guardar archivo JSON de configuración adaptado
                     with open(t_json, "w", encoding="utf-8") as f:
                         json.dump(json_config_dict, f, ensure_ascii=False, indent=4)
                         
@@ -244,7 +446,6 @@ with tab1:
                 except Exception as e:
                     st.error(f"Error crítico en la ejecución del PMML Múltiple: {str(e)}")
                 finally:
-                    # Garantizar la eliminación total de rastros del sistema de archivos en la nube
                     if os.path.exists(t_json): os.remove(t_json)
                     if os.path.exists(t_data_m): os.remove(t_data_m)
                     for t_file in created_temp_files:
@@ -372,7 +573,6 @@ with tab3:
             col_sel_py = st.selectbox("Seleccione columna de probabilidad Python", options=prob_cols_py)
             col_sel_pwc = st.selectbox("Seleccione columna de probabilidad Power Curve (PwC)", options=prob_cols_pwc)
             
-            # Menú desplegable para columna de segmentación solicitado debajo de los de probabilidad
             col_segmentacion = st.selectbox(
                 "Seleccione columna de segmentación (Opcional, dejar en 'Ninguna' por default)", 
                 options=["Ninguna"] + df_analysis.columns.tolist()
@@ -381,13 +581,10 @@ with tab3:
             df_analysis[col_sel_py] = pd.to_numeric(df_analysis[col_sel_py], errors='coerce')
             df_analysis[col_sel_pwc] = pd.to_numeric(df_analysis[col_sel_pwc], errors='coerce')
             
-            # Cálculo del error porcentual solicitado: (Python - PwC) / Python * 100
             df_analysis['error_porcentual'] = ((df_analysis[col_sel_py] - df_analysis[col_sel_pwc]) / (df_analysis[col_sel_py] + 1e-9)) * 100
             
-            # --- LÓGICA DE ANOTACIÓN DINÁMICA DE NOTACIÓN (SI) ---
             max_abs_error = df_analysis['error_porcentual'].abs().max()
             
-            # Identificar el rango de escala de Plotly por defecto para agregar la aclaración estándar
             if pd.isna(max_abs_error) or max_abs_error == 0:
                 nota_escala = ""
             elif max_abs_error < 0.001:
@@ -399,15 +596,13 @@ with tab3:
             elif max_abs_error >= 1000000:
                 nota_escala = "<br><sup>Nota de escala: 'M' significa 1x10⁶ = 1,000,000 (1,000,000% de error)</sup>"
             else:
-                nota_escala = "" # Rango normal entre 1 y 999 (No se añade sufijo SI)
+                nota_escala = "" 
             
-            # Evaluar si se especificó una segmentación válida para asignar colores
             color_param = None if col_segmentacion == "Ninguna" else col_segmentacion
             
             g_col1, g_col2 = st.columns(2)
             with g_col1:
                 st.subheader("Distribución de Residuos (Errores)")
-                # Gráfico modificado para reflejar análisis de residuo en error porcentual (Y) vs Variable (X)
                 fig_hist = px.scatter(
                     df_analysis, 
                     x=col_sel_py, 
@@ -418,7 +613,6 @@ with tab3:
                     color_discrete_sequence=['#FF4B4B'] if color_param is None else None,
                     opacity=0.6
                 )
-                # Línea horizontal en cero para observar la desviación de los datos
                 fig_hist.add_hline(y=0, line_dash="dash", line_color="black", annotation_text="Línea de cero error")
                 st.plotly_chart(fig_hist, use_container_width=True)
                 
