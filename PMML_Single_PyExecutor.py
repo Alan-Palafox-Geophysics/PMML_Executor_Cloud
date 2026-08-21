@@ -1,4 +1,5 @@
 import os
+import gc
 import logging
 from typing import Dict, Any, Optional, List, Tuple
 import pandas as pd
@@ -99,7 +100,7 @@ class SinglePMMLManager:
 
 
 def PMML_Single_Executor(
-    data_path: str, pmml_path: str, types_path: Optional[str] = None
+    data_path: str, pmml_path: str, types_path: Optional[str] = None, chunk_size: int = 1000
 ) -> pd.DataFrame:
     df_raw, df_types = data_reader(data_path, types_path)
     pmml_manager = SinglePMMLManager(pmml_path)
@@ -112,7 +113,26 @@ def PMML_Single_Executor(
             pmml_native_schema = pmml_manager.get_pmml_schema()
             df_transformed = data_transformer(df_raw, pmml_native_schema)
 
-        df_scored = pmml_manager.score(df_transformed)
+        del df_raw
+        gc.collect()
+
+        total_rows = len(df_transformed)
+        if total_rows > chunk_size:
+            logger.info(f"Dataset con {total_rows} registros supera el umbral de {chunk_size}. Evaluando en chunks...")
+            chunks_results = []
+            for start_idx in range(0, total_rows, chunk_size):
+                df_chunk = df_transformed.iloc[start_idx : start_idx + chunk_size].copy()
+                df_scored_chunk = pmml_manager.score(df_chunk)
+                chunks_results.append(df_scored_chunk)
+                del df_chunk, df_scored_chunk
+                gc.collect()
+            
+            df_scored = pd.concat(chunks_results, axis=0)
+            del chunks_results
+            gc.collect()
+        else:
+            df_scored = pmml_manager.score(df_transformed)
+
         return df_scored
     except Exception as e:
         logger.error(f"Fallo crítico procesando el dataset: {str(e)}")

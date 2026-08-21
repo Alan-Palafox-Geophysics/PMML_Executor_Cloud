@@ -1,11 +1,11 @@
 import os
+import gc
 import json
 import logging
 from typing import Dict, Any, Optional, List, Tuple
 import pandas as pd
 from jpmml_evaluator import make_evaluator
 
-# OMITIR RUTAS LOCALES DE JAVA - Streamlit Cloud resuelve la JVM nativamente con packages.txt
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("PMML_Scoring_Engine")
 
@@ -118,7 +118,7 @@ class PMMLManager:
         model = self.loaded_models[segment]
         return [str(field.getName()) if hasattr(field, 'getName') else str(field.name) for field in model.getInputFields()]
 
-    def score_segment(self, df_segment: pd.DataFrame, segment: str) -> pd.DataFrame:
+    def score_segment(self, df_segment: pd.DataFrame, segment: str, chunk_size: int = 1000) -> pd.DataFrame:
         if segment not in self.loaded_models:
             raise KeyError(f"Ejecución denegada: El segmento '{segment}' no tiene un modelo configurado.")
 
@@ -129,22 +129,45 @@ class PMMLManager:
         if missing_cols:
             raise ValueError(f"El dataset carece de variables requeridas por el PMML '{segment}': {missing_cols}")
 
-        df_scoring_input = df_segment[input_order]
-        logger.info(f"Ejecutando scoring JPMML para el segmento '{segment}' con {len(df_segment)} registros.")
+        total_rows = len(df_segment)
+        logger.info(f"Ejecutando scoring JPMML para el segmento '{segment}' con {total_rows} registros.")
         
-        df_predictions = model.evaluateAll(df_scoring_input)
+        if total_rows > chunk_size:
+            logger.info(f"Segmento '{segment}' supera {chunk_size} registros ({total_rows}). Evaluando en chunks...")
+            chunk_results = []
+            for start_idx in range(0, total_rows, chunk_size):
+                sub_segment = df_segment.iloc[start_idx : start_idx + chunk_size].copy()
+                sub_input = sub_segment[input_order]
+                
+                df_predictions = model.evaluateAll(sub_input)
+                if isinstance(df_predictions, pd.Series):
+                    df_predictions = pd.DataFrame(df_predictions, columns=["prediction"])
 
-        if isinstance(df_predictions, pd.Series):
-            df_predictions = pd.DataFrame(df_predictions, columns=["prediction"])
+                df_predictions.index = sub_segment.index
+                df_scored_sub = pd.concat([sub_segment, df_predictions], axis=1)
+                chunk_results.append(df_scored_sub)
+                
+                del sub_segment, sub_input, df_predictions, df_scored_sub
+                gc.collect()
 
-        df_predictions.index = df_segment.index
-        df_scored_output = pd.concat([df_segment, df_predictions], axis=1)
+            df_scored_output = pd.concat(chunk_results, axis=0)
+            del chunk_results
+            gc.collect()
+        else:
+            df_scoring_input = df_segment[input_order]
+            df_predictions = model.evaluateAll(df_scoring_input)
+
+            if isinstance(df_predictions, pd.Series):
+                df_predictions = pd.DataFrame(df_predictions, columns=["prediction"])
+
+            df_predictions.index = df_segment.index
+            df_scored_output = pd.concat([df_segment, df_predictions], axis=1)
         
         return df_scored_output
 
 
 def PMML_PyExecutor(
-    data_path: str, segment_variable: Optional[str] = None, types_path: Optional[str] = None, config_path: Optional[str] = None
+    data_path: str, segment_variable: Optional[str] = None, types_path: Optional[str] = None, config_path: Optional[str] = None, chunk_size: int = 1000
 ) -> pd.DataFrame:
     df_raw, df_types, config = data_reader(data_path, types_path, config_path)
     pmml_manager = PMMLManager(config)
@@ -164,7 +187,10 @@ def PMML_PyExecutor(
                 pmml_native_schema = pmml_manager.get_pmml_schema(segment)
                 df_transformed = data_transformer(df_raw, pmml_native_schema)
 
-            df_scored = pmml_manager.score_segment(df_transformed, segment)
+            del df_raw
+            gc.collect()
+
+            df_scored = pmml_manager.score_segment(df_transformed, segment, chunk_size=chunk_size)
             df_scored["executed_segment"] = segment
             processed_segments_chunks.append(df_scored)
         except Exception as e:
@@ -192,7 +218,10 @@ def PMML_PyExecutor(
                     pmml_native_schema = pmml_manager.get_pmml_schema(segment)
                     df_chunk_transformed = data_transformer(df_chunk, pmml_native_schema)
 
-                df_chunk_scored = pmml_manager.score_segment(df_chunk_transformed, segment)
+                del df_chunk
+                gc.collect()
+
+                df_chunk_scored = pmml_manager.score_segment(df_chunk_transformed, segment, chunk_size=chunk_size)
                 df_chunk_scored["executed_segment"] = segment
                 processed_segments_chunks.append(df_chunk_scored)
             except Exception as e:
@@ -200,4 +229,7 @@ def PMML_PyExecutor(
                 raise e
 
     df_final_output = pd.concat(processed_segments_chunks, axis=0).sort_index()
+    del processed_segments_chunks
+    gc.collect()
+    
     return df_final_output
