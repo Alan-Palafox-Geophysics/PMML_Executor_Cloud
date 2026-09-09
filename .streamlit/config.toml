@@ -1,0 +1,25 @@
+# ---------------------------------------------------------------------------
+# Tema corporativo BBVA
+# ---------------------------------------------------------------------------
+[theme]
+base = "light"
+primaryColor = "#1464A5"              # BBVA Medium Blue
+backgroundColor = "#FFFFFF"
+secondaryBackgroundColor = "#F4F6F9"
+textColor = "#121A2B"
+font = "sans serif"
+
+[server]
+maxUploadSize = 500                   # MB. Extractos de cartera pesados.
+enableXsrfProtection = true
+enableCORS = true
+
+[browser]
+gatherUsageStats = false
+
+[client]
+showErrorDetails = true
+toolbarMode = "minimal"
+
+[runner]
+fastReruns = true

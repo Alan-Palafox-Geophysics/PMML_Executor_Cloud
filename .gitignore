@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+env/
+
+# Streamlit - NUNCA subir secretos al repositorio
+.streamlit/secrets.toml
+
+# Temporales del proyecto
+temp_*
+temp_pmmls/
+*.log
+
+# Datos sensibles: no versionar carteras ni modelos productivos
+*.csv
+*.parquet
+*.xlsx
+!ejemplos/*.csv
+
+# Sistema operativo / editores
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

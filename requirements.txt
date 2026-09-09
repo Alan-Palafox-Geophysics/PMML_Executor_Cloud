@@ -1,0 +1,23 @@
+# ---------------------------------------------------------------------------
+# PMML Risk Workspace - dependencias
+# Versiones fijadas a proposito: sin pines, Streamlit Cloud instala siempre las
+# ultimas y una publicacion de pandas o numpy puede romper el despliegue de un
+# dia para otro sin que se haya tocado el codigo.
+# ---------------------------------------------------------------------------
+
+# Interfaz
+streamlit==1.50.0
+
+# Motor PMML (requiere Java; se instala via packages.txt)
+jpmml-evaluator==0.16.0
+JPype1==1.6.0
+
+# Datos
+pandas==2.3.3
+numpy==2.3.3
+pyarrow==21.0.0
+openpyxl==3.1.5
+lxml==6.0.2
+
+# Visualizacion
+plotly==6.3.0
