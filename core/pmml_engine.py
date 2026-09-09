@@ -132,7 +132,7 @@ def _desambiguar_salidas(
 def puntuar(
     evaluador,
     df: pd.DataFrame,
-    tamano_bloque: int = 5_000,
+    tamano_bloque: int = 1_000,
     callback_progreso: Optional[Callable[[int, int], None]] = None,
 ) -> pd.DataFrame:
     """
