@@ -13,7 +13,7 @@ from typing import Iterable, Optional, Sequence
 import pandas as pd
 import streamlit as st
 
-from core.data_utils import a_csv_bytes, a_excel_bytes
+from core.data_utils import a_excel_bytes
 
 
 def cabecera(titulo: str, descripcion: str, etiqueta: str = "Risk Analytics") -> None:
@@ -125,18 +125,19 @@ def descargas(
     # --------------------------------------------------------------- CSV
     with columnas[0]:
         if st.session_state.get(estado_csv) is None:
-            if st.button(
-                f"Preparar CSV ({filas:,} filas)",
-                use_container_width=True,
-                key=f"prep_csv_{clave}"
-            ):
+            if st.button(f"Preparar CSV ({filas:,} filas)",
+                         use_container_width=True, key=f"prep_csv_{clave}"):
                 with st.spinner("Generando el archivo CSV..."):
+                    # Generar bytes directamente desde pandas para garantizar:
+                    # - índice fuera del archivo
+                    # - UTF-8 con BOM (abre correctamente acentos/ñ en Excel)
+                    # - salto de línea estándar
+                    # - conservación exacta de las columnas y datos
                     st.session_state[estado_csv] = df.to_csv(
                         index=False,
                         encoding="utf-8-sig",
-                        lineterminator="\n",
+                        lineterminator="\\n",
                     ).encode("utf-8-sig")
-
                 st.rerun()
         else:
             st.download_button(
