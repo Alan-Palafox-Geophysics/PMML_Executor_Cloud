@@ -174,9 +174,10 @@ def estado_motor(estado) -> None:
             "No se pudo inicializar la máquina virtual de Java, necesaria para "
             "evaluar modelos PMML.\n\n"
             f"**Detalle:** {estado.detalle_error}\n\n"
-            "Verifica que el archivo `packages.txt` esté en la raíz del "
-            "repositorio con el contenido `openjdk-17-jre-headless` y reinicia "
-            "la aplicación desde el panel de Streamlit Cloud."
+            "Verifica que `jdk4py==21.0.8.2` figure en `requirements.txt` y que "
+            "la instalación de dependencias haya terminado sin errores. Si "
+            "acabas de añadirlo, reinicia la aplicación desde "
+            "**Manage app → ⋮ → Reboot app**."
         )
         for linea in estado.diagnostico:
             st.caption(f"• {linea}")
