@@ -125,17 +125,25 @@ def descargas(
     # --------------------------------------------------------------- CSV
     with columnas[0]:
         if st.session_state.get(estado_csv) is None:
-            if st.button(f"Preparar CSV ({filas:,} filas)",
-                         use_container_width=True, key=f"prep_csv_{clave}"):
-                with st.spinner("Generando el archivo..."):
-                    st.session_state[estado_csv] = a_csv_bytes(df)
+            if st.button(
+                f"Preparar CSV ({filas:,} filas)",
+                use_container_width=True,
+                key=f"prep_csv_{clave}"
+            ):
+                with st.spinner("Generando el archivo CSV..."):
+                    st.session_state[estado_csv] = df.to_csv(
+                        index=False,
+                        encoding="utf-8-sig",
+                        lineterminator="\n",
+                    ).encode("utf-8-sig")
+
                 st.rerun()
         else:
             st.download_button(
                 "Descargar CSV",
                 data=st.session_state[estado_csv],
                 file_name=f"{nombre_base}.csv",
-                mime="text/csv",
+                mime="text/csv; charset=utf-8",
                 use_container_width=True,
                 key=f"csv_{clave}",
             )
