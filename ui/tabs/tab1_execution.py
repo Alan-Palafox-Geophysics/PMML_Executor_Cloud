@@ -289,6 +289,7 @@ def _modulo_scoring_unico(estado_jvm, usuario) -> None:
         return
 
     if not st.button("Ejecutar scoring", type="primary", key="btn_unico"):
+        _mostrar_persistido("unico")
         return
 
     barra = st.progress(0.0, text="Preparando ejecución...")
@@ -328,6 +329,7 @@ def _modulo_scoring_unico(estado_jvm, usuario) -> None:
 
     barra.empty()
     st.session_state.resultado_scoring = resultado.datos
+    _guardar_resultado("unico", resultado, "scoring_unico", archivo_pmml.name)
     _mostrar_resultado(resultado, "scoring_unico", archivo_pmml.name)
 
 
@@ -420,6 +422,7 @@ def _modulo_scoring_multiple(estado_jvm, usuario) -> None:
         return
 
     if not st.button("Ejecutar scoring multimodelo", type="primary", key="btn_multi"):
+        _mostrar_persistido("multi")
         return
 
     barra = st.progress(0.0, text="Preparando ejecución...")
@@ -467,6 +470,7 @@ def _modulo_scoring_multiple(estado_jvm, usuario) -> None:
                 "Esos registros **no fueron evaluados**."
             )
 
+    _guardar_resultado("multi", resultado, "scoring_multimodelo", "multimodelo")
     _mostrar_resultado(resultado, "scoring_multimodelo", "multimodelo")
 
     if resultado.resumen_segmentos is not None:
@@ -477,6 +481,30 @@ def _modulo_scoring_multiple(estado_jvm, usuario) -> None:
 # --------------------------------------------------------------------------
 # Presentación de resultados
 # --------------------------------------------------------------------------
+def _guardar_resultado(cual: str, resultado, nombre_base: str, referencia: str) -> None:
+    """
+    Conserva la corrida en la sesion y descarta exportaciones anteriores.
+
+    Sin esto, el bloque de resultados solo existia mientras duraba la
+    re-ejecucion provocada por el boton «Ejecutar». En cuanto el usuario
+    pulsaba cualquier otro control —preparar el CSV, por ejemplo— Streamlit
+    volvia a correr el script, el boton de ejecucion ya valia False y toda la
+    seccion desaparecia, botones de descarga incluidos.
+
+    Ademas se limpian los archivos ya serializados: si no, una corrida nueva
+    seguiria ofreciendo para descarga los bytes de la anterior.
+    """
+    comp.limpiar_exportaciones()
+    st.session_state[f"_resultado_{cual}"] = (resultado, nombre_base, referencia)
+
+
+def _mostrar_persistido(cual: str) -> None:
+    """Vuelve a dibujar la ultima corrida guardada, si la hay."""
+    guardado = st.session_state.get(f"_resultado_{cual}")
+    if guardado is not None:
+        _mostrar_resultado(*guardado)
+
+
 def _mostrar_resultado(resultado, nombre_base: str, referencia: str) -> None:
     st.success(f"Scoring completado sobre {resultado.filas_procesadas:,} registros.")
 

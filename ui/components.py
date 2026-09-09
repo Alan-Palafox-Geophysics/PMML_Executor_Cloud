@@ -13,7 +13,7 @@ from typing import Iterable, Optional, Sequence
 import pandas as pd
 import streamlit as st
 
-from core.data_utils import a_excel_bytes
+from core.data_utils import a_csv_bytes, a_excel_bytes
 
 
 def cabecera(titulo: str, descripcion: str, etiqueta: str = "Risk Analytics") -> None:
@@ -93,6 +93,36 @@ def tabla(df: pd.DataFrame, altura: Optional[int] = None, ocultar_indice: bool =
         st.dataframe(df.astype(str), **parametros)
 
 
+@st.cache_data(show_spinner=False, max_entries=3)
+def _csv_serializado(huella: str, _df) -> bytes:
+    """CSV serializado una sola vez por conjunto de datos."""
+    return a_csv_bytes(_df)
+
+
+@st.cache_data(show_spinner=False, max_entries=2)
+def _excel_serializado(huella: str, _df) -> bytes:
+    """XLSX serializado una sola vez por conjunto de datos."""
+    return a_excel_bytes(_df)
+
+
+def _huella(df: pd.DataFrame, clave: str) -> str:
+    """
+    Identificador barato y estable de un DataFrame.
+
+    Hashear el dataframe completo en cada re-ejecucion costaria tanto como
+    serializarlo, que es justo lo que se quiere evitar. Basta con la forma, los
+    nombres de columna y una muestra espaciada de hasta 200 filas: dos corridas
+    distintas practicamente nunca coinciden en los tres a la vez.
+    """
+    paso = max(len(df) // 200, 1)
+    muestra = df.iloc[::paso].head(200)
+    try:
+        firma = int(pd.util.hash_pandas_object(muestra.astype(str), index=True).sum())
+    except Exception:
+        firma = len(df)
+    return f"{clave}|{df.shape}|{hash(tuple(map(str, df.columns)))}|{firma}"
+
+
 def descargas(
     df: pd.DataFrame,
     nombre_base: str,
@@ -100,88 +130,79 @@ def descargas(
     incluir_excel: bool = True,
 ) -> None:
     """
-    Botonera de exportacion en CSV y Excel, generada BAJO DEMANDA.
+    Botonera de exportacion en CSV y Excel.
 
-    `st.download_button` exige los bytes en el momento de dibujarse, asi que
-    pasarle `a_csv_bytes(df)` directamente serializa el dataframe completo en
-    CADA re-ejecucion del script: al cambiar de pestana, al pulsar cualquier
-    control y tambien despues de la propia descarga. Con cientos de miles de
-    registros eso son varios segundos de CPU y cientos de MB por interaccion,
-    y es lo que hacia que la aplicacion se bloqueara.
+    El CSV se descarga con un solo clic: los bytes se generan la primera vez
+    que se dibuja el bloque y quedan en cache, de modo que las siguientes
+    re-ejecuciones no repiten el trabajo. Serializar sin cache en cada
+    re-ejecucion es lo que bloqueaba la aplicacion con volumenes grandes.
 
-    Aqui la serializacion se dispara solo cuando el usuario la pide, y los
-    bytes quedan en la sesion para que las re-ejecuciones siguientes no
-    repitan el trabajo.
+    El Excel queda detras de una casilla porque `openpyxl` es un orden de
+    magnitud mas lento que el CSV y en carteras grandes tarda decenas de
+    segundos: no conviene pagar ese coste salvo que se pida.
     """
     if df is None or df.empty:
         return
 
-    estado_csv = f"_export_csv_{clave}"
-    estado_xlsx = f"_export_xlsx_{clave}"
+    huella = _huella(df, clave)
     filas = len(df)
 
     columnas = st.columns(2 if incluir_excel else 1)
 
     # --------------------------------------------------------------- CSV
     with columnas[0]:
-        if st.session_state.get(estado_csv) is None:
+        try:
+            with st.spinner("Preparando el archivo..."):
+                contenido = _csv_serializado(huella, df)
             st.download_button(
-                "Descargar CSV",
-                data=st.session_state[estado_csv],
+                f"Descargar CSV ({filas:,} filas)",
+                data=contenido,
                 file_name=f"{nombre_base}.csv",
-                mime="text/csv; charset=utf-8",
+                mime="text/csv",
                 use_container_width=True,
                 key=f"csv_{clave}",
             )
-
-        else :
-            if st.button(f"Preparar CSV ({filas:,} filas)",
-                         use_container_width=True, key=f"prep_csv_{clave}"):
-                with st.spinner("Generando el archivo CSV..."):
-                    # Generar bytes directamente desde pandas para garantizar:
-                    # - índice fuera del archivo
-                    # - UTF-8 con BOM (abre correctamente acentos/ñ en Excel)
-                    # - salto de línea estándar
-                    # - conservación exacta de las columnas y datos
-                    st.session_state[estado_csv] = df.to_csv(
-                        index=False,
-                        encoding="utf-8-sig",
-                        lineterminator="\\n",
-                    ).encode("utf-8-sig")
-                st.rerun()
-        
+        except Exception as exc:
+            st.error(f"No fue posible generar el CSV: {exc}")
 
     # ------------------------------------------------------------- Excel
     if incluir_excel:
         with columnas[1]:
-            if st.session_state.get(estado_xlsx) is None:
-                if st.button("Preparar Excel", use_container_width=True,
-                             key=f"prep_xlsx_{clave}",
-                             help="Más lento que el CSV en volúmenes grandes."):
-                    try:
-                        with st.spinner("Generando el archivo..."):
-                            st.session_state[estado_xlsx] = a_excel_bytes(df)
-                        st.rerun()
-                    except Exception as exc:
-                        st.error(f"No fue posible generar el Excel: {exc}")
-            else:
-                st.download_button(
-                    "Descargar Excel",
-                    data=st.session_state[estado_xlsx],
-                    file_name=f"{nombre_base}.xlsx",
-                    mime=(
-                        "application/vnd.openxmlformats-officedocument."
-                        "spreadsheetml.sheet"
-                    ),
-                    use_container_width=True,
-                    key=f"xlsx_{clave}",
-                )
+            quiere_excel = st.checkbox(
+                "Generar Excel", key=f"chk_xlsx_{clave}",
+                help="Más lento que el CSV. El CSV abre igual en Excel.",
+            )
+            if quiere_excel:
+                try:
+                    with st.spinner("Generando el Excel..."):
+                        contenido_xlsx = _excel_serializado(huella, df)
+                    st.download_button(
+                        "Descargar Excel",
+                        data=contenido_xlsx,
+                        file_name=f"{nombre_base}.xlsx",
+                        mime=(
+                            "application/vnd.openxmlformats-officedocument."
+                            "spreadsheetml.sheet"
+                        ),
+                        use_container_width=True,
+                        key=f"xlsx_{clave}",
+                    )
+                except Exception as exc:
+                    st.error(f"No fue posible generar el Excel: {exc}")
 
 
 def limpiar_exportaciones() -> None:
-    """Descarta los archivos de exportacion ya generados en la sesion."""
-    for clave in [k for k in st.session_state if str(k).startswith("_export_")]:
-        st.session_state[clave] = None
+    """
+    Reinicia el estado de exportacion al empezar una corrida nueva.
+
+    Los bytes ya no se guardan en la sesion sino en cache, indexados por una
+    huella del propio conjunto de datos, asi que una corrida nueva genera de
+    por si un archivo nuevo y no puede servirse el anterior. Lo unico que hay
+    que devolver a su sitio es la casilla del Excel, para no arrastrar el
+    coste de generarlo cuando el usuario no lo ha vuelto a pedir.
+    """
+    for clave in [k for k in st.session_state if str(k).startswith("chk_xlsx_")]:
+        st.session_state[clave] = False
 
 
 def aviso_calidad(reporte) -> None:
