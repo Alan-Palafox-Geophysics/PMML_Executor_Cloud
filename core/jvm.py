@@ -66,17 +66,34 @@ def _descubrir_java_home() -> Optional[str]:
     if java_home_actual and _tiene_libjvm(java_home_actual):
         return java_home_actual
 
-    # 2) Rutas conocidas de Debian/Ubuntu (caso Streamlit Cloud).
+    # 2) JRE empaquetado como wheel de PyPI (jdk4py).
+    #
+    #    Esta es la via preferente en Streamlit Cloud. Instalar Java por
+    #    `packages.txt` depende de que `apt-get update` termine sin errores, y
+    #    la imagen de Cloud mezcla repositorios Debian: cuando el Release file
+    #    de alguno caduca, apt devuelve codigo distinto de cero y el despliegue
+    #    se cae ANTES de instalar nada. Al venir el runtime dentro de un wheel,
+    #    el problema desaparece: se instala con pip como cualquier dependencia.
+    try:
+        import jdk4py  # noqa: PLC0415
+
+        ruta_jdk4py = str(jdk4py.JAVA_HOME)
+        if _tiene_libjvm(ruta_jdk4py):
+            return ruta_jdk4py
+    except Exception:
+        pass
+
+    # 3) Rutas conocidas de Debian/Ubuntu (instalacion por apt).
     for ruta in _RUTAS_JVM_CANDIDATAS:
         if _tiene_libjvm(ruta):
             return ruta
 
-    # 3) Cualquier openjdk instalado bajo /usr/lib/jvm.
+    # 4) Cualquier openjdk instalado bajo /usr/lib/jvm.
     for ruta in sorted(glob.glob("/usr/lib/jvm/*"), reverse=True):
         if _tiene_libjvm(ruta):
             return ruta
 
-    # 4) Derivar desde el ejecutable `java` que este en PATH.
+    # 5) Derivar desde el ejecutable `java` que este en PATH.
     ejecutable = shutil.which("java")
     if ejecutable:
         real = os.path.realpath(ejecutable)  # /usr/lib/jvm/<jdk>/bin/java
@@ -132,8 +149,9 @@ def iniciar_jvm() -> EstadoJVM:
     java_home = _descubrir_java_home()
     if java_home is None:
         diagnostico.append(
-            "No se encontro ninguna JVM. Verifica que 'packages.txt' contenga "
-            "'openjdk-17-jre-headless' y que el despliegue se haya reconstruido."
+            "No se encontro ninguna JVM. Verifica que 'jdk4py' figure en "
+            "requirements.txt y que la instalacion de dependencias haya "
+            "terminado sin errores."
         )
         return EstadoJVM(
             disponible=False,

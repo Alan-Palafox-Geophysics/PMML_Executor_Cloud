@@ -1,5 +1,6 @@
 # ---------------------------------------------------------------------------
 # PMML Risk Workspace - dependencias
+#
 # Versiones fijadas a proposito: sin pines, Streamlit Cloud instala siempre las
 # ultimas y una publicacion de pandas o numpy puede romper el despliegue de un
 # dia para otro sin que se haya tocado el codigo.
@@ -8,9 +9,18 @@
 # Interfaz
 streamlit==1.50.0
 
-# Motor PMML (requiere Java; se instala via packages.txt)
+# Motor PMML
 jpmml-evaluator==0.16.0
 JPype1==1.6.0
+
+# Runtime de Java empaquetado como wheel (JDK 21 LTS).
+#
+# Se instala con pip, NO con apt. La imagen de Streamlit Cloud mezcla
+# repositorios Debian y, cuando el Release file de alguno caduca, `apt-get
+# update` devuelve codigo distinto de cero y el despliegue falla antes de
+# instalar nada. Trayendo el runtime en un wheel, el despliegue deja de
+# depender del estado de los repositorios del sistema.
+jdk4py==21.0.8.2
 
 # Datos
 pandas==2.3.3
