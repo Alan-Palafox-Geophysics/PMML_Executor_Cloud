@@ -214,12 +214,28 @@ def render() -> None:
     # -------------------------------------------------------------- gráficos
     comp.seccion("3.3", "Diagnóstico gráfico")
 
+    # Un scatter de Plotly serializa un punto por registro hacia el navegador.
+    # Con cientos de miles de filas el JSON resultante llega a cientos de MB y
+    # la pestana del navegador se queda sin memoria: ese era el bloqueo al
+    # entrar en esta pantalla despues de conciliar. Las metricas de arriba se
+    # calculan sobre el total; solo el dibujo trabaja sobre una muestra.
+    MAXIMO_PUNTOS = 20_000
+    if len(trabajo) > MAXIMO_PUNTOS:
+        grafico = trabajo.sample(MAXIMO_PUNTOS, random_state=0).sort_index()
+        st.caption(
+            f"Los gráficos muestran una muestra aleatoria de "
+            f"{MAXIMO_PUNTOS:,} de los {len(trabajo):,} registros comparados. "
+            "Las métricas y las tablas se calculan sobre el total."
+        )
+    else:
+        grafico = trabajo
+
     col_g1, col_g2 = st.columns(2)
 
     with col_g1:
         st.markdown("**Concordancia entre motores**")
         figura = px.scatter(
-            trabajo, x=columna_py, y=columna_pwc, color=color,
+            grafico, x=columna_py, y=columna_pwc, color=color,
             labels=etiquetas, opacity=0.65,
             color_discrete_sequence=secuencia,
             color_continuous_scale=escala_continua,
@@ -239,7 +255,7 @@ def render() -> None:
     with col_g2:
         st.markdown("**Estructura del residuo**")
         figura_residuo = px.scatter(
-            trabajo, x=columna_py, y="diferencia", color=color,
+            grafico, x=columna_py, y="diferencia", color=color,
             labels=etiquetas, opacity=0.65,
             color_discrete_sequence=secuencia,
             color_continuous_scale=escala_continua,
@@ -256,7 +272,7 @@ def render() -> None:
     with col_g3:
         st.markdown("**Distribución de las diferencias**")
         figura_hist = px.histogram(
-            trabajo, x="diferencia", nbins=60, labels=etiquetas,
+            grafico, x="diferencia", nbins=60, labels=etiquetas,
             color_discrete_sequence=[AZUL_MEDIO],
             title="Histograma del residuo",
         )
@@ -266,10 +282,10 @@ def render() -> None:
         st.markdown("**Distribución de ambos motores**")
         figura_dist = go.Figure()
         figura_dist.add_trace(go.Histogram(
-            x=trabajo[columna_py], name="Python (PMML)",
+            x=grafico[columna_py], name="Python (PMML)",
             marker_color=AZUL_MEDIO, opacity=0.62, nbinsx=50))
         figura_dist.add_trace(go.Histogram(
-            x=trabajo[columna_pwc], name="Power Curve",
+            x=grafico[columna_pwc], name="Power Curve",
             marker_color=AQUA, opacity=0.62, nbinsx=50))
         figura_dist.update_layout(barmode="overlay",
                                   title="Comparación de distribuciones")

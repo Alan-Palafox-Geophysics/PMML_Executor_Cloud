@@ -99,31 +99,64 @@ def descargas(
     clave: str,
     incluir_excel: bool = True,
 ) -> None:
-    """Botonera de exportacion en CSV y Excel."""
+    """
+    Botonera de exportacion en CSV y Excel, generada BAJO DEMANDA.
+
+    `st.download_button` exige los bytes en el momento de dibujarse, asi que
+    pasarle `a_csv_bytes(df)` directamente serializa el dataframe completo en
+    CADA re-ejecucion del script: al cambiar de pestana, al pulsar cualquier
+    control y tambien despues de la propia descarga. Con cientos de miles de
+    registros eso son varios segundos de CPU y cientos de MB por interaccion,
+    y es lo que hacia que la aplicacion se bloqueara.
+
+    Aqui la serializacion se dispara solo cuando el usuario la pide, y los
+    bytes quedan en la sesion para que las re-ejecuciones siguientes no
+    repitan el trabajo.
+    """
     if df is None or df.empty:
         return
 
-    columnas = st.columns(2 if incluir_excel else 1)
-    with columnas[0]:
-        st.download_button(
-            "Descargar CSV",
-            data=a_csv_bytes(df),
-            file_name=f"{nombre_base}.csv",
-            mime="text/csv",
-            use_container_width=True,
-            key=f"csv_{clave}",
-        )
+    estado_csv = f"_export_csv_{clave}"
+    estado_xlsx = f"_export_xlsx_{clave}"
+    filas = len(df)
 
+    columnas = st.columns(2 if incluir_excel else 1)
+
+    # --------------------------------------------------------------- CSV
+    with columnas[0]:
+        if st.session_state.get(estado_csv) is None:
+            if st.button(f"Preparar CSV ({filas:,} filas)",
+                         use_container_width=True, key=f"prep_csv_{clave}"):
+                with st.spinner("Generando el archivo..."):
+                    st.session_state[estado_csv] = a_csv_bytes(df)
+                st.rerun()
+        else:
+            st.download_button(
+                "Descargar CSV",
+                data=st.session_state[estado_csv],
+                file_name=f"{nombre_base}.csv",
+                mime="text/csv",
+                use_container_width=True,
+                key=f"csv_{clave}",
+            )
+
+    # ------------------------------------------------------------- Excel
     if incluir_excel:
         with columnas[1]:
-            try:
-                contenido = a_excel_bytes(df)
-            except Exception:
-                contenido = None
-            if contenido is not None:
+            if st.session_state.get(estado_xlsx) is None:
+                if st.button("Preparar Excel", use_container_width=True,
+                             key=f"prep_xlsx_{clave}",
+                             help="Más lento que el CSV en volúmenes grandes."):
+                    try:
+                        with st.spinner("Generando el archivo..."):
+                            st.session_state[estado_xlsx] = a_excel_bytes(df)
+                        st.rerun()
+                    except Exception as exc:
+                        st.error(f"No fue posible generar el Excel: {exc}")
+            else:
                 st.download_button(
                     "Descargar Excel",
-                    data=contenido,
+                    data=st.session_state[estado_xlsx],
                     file_name=f"{nombre_base}.xlsx",
                     mime=(
                         "application/vnd.openxmlformats-officedocument."
@@ -132,6 +165,12 @@ def descargas(
                     use_container_width=True,
                     key=f"xlsx_{clave}",
                 )
+
+
+def limpiar_exportaciones() -> None:
+    """Descarta los archivos de exportacion ya generados en la sesion."""
+    for clave in [k for k in st.session_state if str(k).startswith("_export_")]:
+        st.session_state[clave] = None
 
 
 def aviso_calidad(reporte) -> None:

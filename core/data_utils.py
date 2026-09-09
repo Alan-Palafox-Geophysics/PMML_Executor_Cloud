@@ -22,29 +22,36 @@ from typing import Dict, Optional, Tuple, Union
 import numpy as np
 import pandas as pd
 
-# Mapa PMML -> pandas. `Int64` (nullable) permite enteros con faltantes, cosa
-# que el int64 clasico de numpy no soporta.
+# Mapa PMML -> pandas. Identico al de la aplicacion original.
+#
+# `string` se mapea a `object`, NO al StringDtype de pandas, y `boolean` a
+# `bool`. El tipo de destino determina como se serializa la columna hacia la
+# JVM, asi que cualquier desviacion aqui cambia lo que el modelo recibe.
 MAPA_TIPOS_PMML = {
     "double": "float64",
     "float": "float32",
-    "integer": "Int64",
+    "integer": "Int64",   # Int64 admite faltantes
     "int": "Int64",
-    "string": "string",
-    "boolean": "boolean",
-    "date": "string",
-    "dateTime": "string",
+    "string": "object",
+    "boolean": "bool",
+    "date": "object",
+    "dateTime": "object",
 }
 
-_VALORES_NULOS = {
-    "", "nan", "NaN", "NAN", "null", "NULL", "None", "none",
-    "NA", "na", "N/A", "n/a", "<NA>", ".", "-", "?",
-}
+# Marcadores de nulo aplicados a las columnas de texto. Es EXACTAMENTE la lista
+# de la aplicacion original.
+#
+# Es deliberadamente corta. Ampliarla parece inofensivo pero no lo es: en
+# riesgo de credito, «NA», «-», «.» o «?» son categorias con significado
+# propio («no aplica», «sin informacion»). Si se convierten en nulo, el modelo
+# recibe un faltante donde habia un valor valido y devuelve el resultado por
+# defecto, que es indistinguible a simple vista de un scoring correcto.
+_VALORES_NULOS_TEXTO = ["nan", "NaN", "null", ""]
 
 _MAPA_BOOLEANO = {
-    "true": True, "t": True, "yes": True, "y": True, "si": True, "s": True,
-    "1": True, "1.0": True, "verdadero": True,
-    "false": False, "f": False, "no": False, "n": False,
-    "0": False, "0.0": False, "falso": False,
+    "true": True, "1": True, "1.0": True, "yes": True, "t": True, "y": True,
+    "false": False, "0": False, "0.0": False, "no": False, "f": False, "n": False,
+    "nan": pd.NA, "null": pd.NA, "": pd.NA,
 }
 
 
@@ -87,6 +94,11 @@ def leer_tabla(
     infiera los tipos antes de conocer el esquema del PMML produce silenciosas
     perdidas de ceros a la izquierda en identificadores y conversiones a float
     de campos que el modelo espera categoricos.
+
+    El tratamiento de nulos es el que trae pandas por defecto, igual que en la
+    aplicacion original. No se amplia la lista de marcadores: hacerlo convierte
+    categorias validas como «-» o «.» en faltantes y el modelo acaba puntuando
+    con valores ausentes.
     """
     nombre_normalizado = (nombre or str(origen)).lower()
 
@@ -96,11 +108,7 @@ def leer_tabla(
     if isinstance(origen, bytes):
         origen = io.BytesIO(origen)
 
-    opciones = {
-        "keep_default_na": False,
-        "na_values": list(_VALORES_NULOS),
-        "low_memory": False,
-    }
+    opciones = {"low_memory": False}
     if como_texto:
         opciones["dtype"] = str
 
@@ -133,64 +141,42 @@ def leer_diccionario_tipos(origen, nombre: str = "") -> Optional[Dict[str, str]]
     return dict(zip(columnas, tipos))
 
 
-def _normalizar_texto(serie: pd.Series) -> pd.Series:
-    """Convierte a texto limpio y unifica todos los marcadores de nulo."""
-    limpia = serie.astype("string").str.strip()
-    return limpia.replace(list(_VALORES_NULOS), pd.NA)
-
-
-def _a_numerico(serie: pd.Series) -> pd.Series:
-    """
-    Convierte texto a numero tolerando formatos de exportacion habituales:
-    separadores de miles, coma decimal, signos de porcentaje y parentesis
-    contables para negativos.
-    """
-    texto = _normalizar_texto(serie)
-
-    # Negativos en notacion contable: (1234) -> -1234
-    texto = texto.str.replace(r"^\((.*)\)$", r"-\1", regex=True)
-    texto = texto.str.replace("%", "", regex=False)
-    texto = texto.str.replace(r"\s", "", regex=True)
-
-    # Coma decimal europea: 1.234,56 -> 1234.56 (solo si hay punto y coma).
-    tiene_ambos = texto.str.contains(r"\.", na=False) & texto.str.contains(",", na=False)
-    texto = texto.mask(
-        tiene_ambos,
-        texto.str.replace(".", "", regex=False).str.replace(",", ".", regex=False),
-    )
-    # Coma como unico separador decimal: 1234,56 -> 1234.56
-    solo_coma = texto.str.contains(",", na=False) & ~texto.str.contains(r"\.", na=False)
-    texto = texto.mask(solo_coma, texto.str.replace(",", ".", regex=False))
-
-    return pd.to_numeric(texto, errors="coerce")
-
-
 def convertir_serie(serie: pd.Series, tipo_destino: str) -> pd.Series:
-    """Convierte una serie al tipo pandas indicado sin lanzar excepciones."""
+    """
+    Convierte una serie al tipo pandas indicado.
+
+    Reproduce la logica de `data_transformer` de la aplicacion original, con
+    una unica ampliacion: el caso de los enteros escritos como "35.0", que en
+    la version original abortaba la ejecucion con un error de conversion.
+
+    Deliberadamente NO se normalizan separadores de miles, comas decimales,
+    porcentajes ni negativos en notacion contable. Esas transformaciones
+    parecen utiles pero reinterpretan el dato: "12,280.18" acabaria valiendo
+    12.28 en lugar de 12280.18, y el modelo puntuaria sobre una cifra mil veces
+    menor sin que nada lo delate. Si un archivo trae ese formato, es preferible
+    que la conversion falle de forma visible a que se corrija mal en silencio.
+    """
     tipo = MAPA_TIPOS_PMML.get(tipo_destino, tipo_destino)
 
-    if tipo in ("boolean", "bool"):
-        texto = _normalizar_texto(serie).str.lower()
-        return texto.map(_MAPA_BOOLEANO).astype("boolean")
+    if tipo in ("bool", "boolean"):
+        mapeada = serie.astype(str).str.strip().str.lower().map(_MAPA_BOOLEANO)
+        return mapeada.astype("boolean")
+
+    if tipo in ("object", "string", "str"):
+        texto = serie.astype(str).str.replace(r"\.0$", "", regex=True)
+        return texto.replace(_VALORES_NULOS_TEXTO, np.nan)
 
     if tipo in ("Int64", "int64", "Int32", "int32"):
-        # Clave del arreglo: pasar por float y redondear antes de enteros, de
-        # forma que "35.0" -> 35 en lugar de reventar la conversion.
-        numerico = _a_numerico(serie)
-        return numerico.round().astype("Int64")
+        try:
+            return serie.astype(tipo)
+        except (ValueError, TypeError):
+            # Unico anadido sobre el original: un entero exportado como "35.0"
+            # —lo que ocurre siempre que la columna tuvo nulos en origen— hacia
+            # fallar `astype("Int64")` y abortaba toda la corrida.
+            numerico = pd.to_numeric(serie, errors="coerce")
+            return numerico.round().astype("Int64")
 
-    if tipo in ("float64", "float32", "float"):
-        return _a_numerico(serie).astype(tipo if tipo != "float" else "float64")
-
-    if tipo in ("string", "object", "str"):
-        texto = _normalizar_texto(serie)
-        # Un identificador leido como float ("12345.0") debe volver a "12345",
-        # o el cruce por llave primaria fallara silenciosamente.
-        parece_entero = texto.str.fullmatch(r"-?\d+\.0+", na=False)
-        texto = texto.mask(parece_entero, texto.str.replace(r"\.0+$", "", regex=True))
-        return texto
-
-    return serie.astype("string")
+    return serie.astype(tipo)
 
 
 def aplicar_esquema(
@@ -252,7 +238,7 @@ def limpiar_llave_primaria(serie: pd.Series) -> pd.Series:
     texto = serie.astype("string").str.strip()
     parece_entero = texto.str.fullmatch(r"-?\d+\.0+", na=False)
     texto = texto.mask(parece_entero, texto.str.replace(r"\.0+$", "", regex=True))
-    return texto.replace(list(_VALORES_NULOS), pd.NA)
+    return texto.replace(_VALORES_NULOS_TEXTO, pd.NA)
 
 
 def perfilar_dataframe(df: pd.DataFrame) -> pd.DataFrame:
