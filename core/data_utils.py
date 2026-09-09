@@ -225,6 +225,21 @@ def aplicar_esquema(
     return resultado, reporte
 
 
+def clean_primary_key(series: pd.Series) -> pd.Series:
+    """
+    Limpia las llaves primarias antes de hacer merge.
+
+    Replica exactamente el comportamiento de la aplicacion original:
+    convierte a texto, elimina el sufijo «.0» heredado de una lectura como
+    float y recorta espacios. Es la unica normalizacion aplicada a la llave en
+    la conciliacion, y se mantiene literal a proposito: cualquier variacion
+    (tratar los nulos como pd.NA, recortar «.00», normalizar mayusculas)
+    cambia el conjunto de registros que emparejan y, por tanto, el resultado
+    de la validacion.
+    """
+    return series.astype(str).str.replace(r"\.0$", "", regex=True).str.strip()
+
+
 def limpiar_llave_primaria(serie: pd.Series) -> pd.Series:
     """
     Normaliza una llave primaria para que los cruces no fallen por formato.

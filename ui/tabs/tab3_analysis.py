@@ -93,7 +93,7 @@ def render() -> None:
 
     columnas_python = detectar_columnas_probabilidad(df)
     columnas_pwc = detectar_columnas_probabilidad(df, prefijo="pwc_")
-    columnas_control = detectar_columnas_probabilidad(df, prefijo="cc_")
+    columnas_control = detectar_columnas_probabilidad(df, prefijo="CifrasControl_")
 
     if not columnas_python or not columnas_pwc:
         st.error(
