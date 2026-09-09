@@ -1,33 +1,32 @@
 # ---------------------------------------------------------------------------
 # PMML Risk Workspace - dependencias
 #
-# Versiones fijadas a proposito: sin pines, Streamlit Cloud instala siempre las
-# ultimas y una publicacion de pandas o numpy puede romper el despliegue de un
-# dia para otro sin que se haya tocado el codigo.
+# Este set tiene wheels precompilados para Python 3.11, 3.12, 3.13 y 3.14.
+# Es deliberado: si falta un wheel para la version de Python que use Streamlit
+# Cloud, pip intenta compilar desde el codigo fuente y pyarrow falla porque el
+# contenedor no trae el toolchain de Arrow C++.
+#
+# Regla practica: en el log de despliegue NINGUN paquete deberia decir
+# "Successfully built". Si lo dice, falta un wheel y el despliegue es fragil.
 # ---------------------------------------------------------------------------
 
 # Interfaz
-streamlit==1.50.0
+streamlit==1.63.0
 
 # Motor PMML
 jpmml-evaluator==0.16.0
-JPype1==1.6.0
+JPype1==1.7.1
 
-# Runtime de Java empaquetado como wheel (JDK 21 LTS).
-#
-# Se instala con pip, NO con apt. La imagen de Streamlit Cloud mezcla
-# repositorios Debian y, cuando el Release file de alguno caduca, `apt-get
-# update` devuelve codigo distinto de cero y el despliegue falla antes de
-# instalar nada. Trayendo el runtime en un wheel, el despliegue deja de
-# depender del estado de los repositorios del sistema.
+# Runtime de Java empaquetado como wheel (JDK 21 LTS), instalado con pip.
+# Evita depender de apt-get, que falla cuando caduca un indice de Debian.
 jdk4py==21.0.8.2
 
 # Datos
-pandas==2.3.3
-numpy==2.3.3
-pyarrow==21.0.0
+pandas==3.0.2
+numpy==2.4.4
+pyarrow==22.0.0
 openpyxl==3.1.5
 lxml==6.0.2
 
 # Visualizacion
-plotly==6.3.0
+plotly==7.0.0
