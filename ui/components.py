@@ -155,14 +155,23 @@ def aviso_calidad(reporte) -> None:
             tabla(detalle)
 
 
-def estado_motor(estado) -> None:
-    """Panel de diagnostico del entorno de ejecucion Java."""
+def estado_motor(estado, mostrar_diagnostico: bool = False) -> None:
+    """
+    Panel de estado del entorno de ejecucion Java.
+
+    El detalle tecnico (rutas del sistema, version de la JVM) solo se muestra a
+    los perfiles con permiso de diagnostico: expone informacion de
+    infraestructura que no aporta al analista y si a quien quiera sondear el
+    entorno.
+    """
     if estado.disponible:
         st.markdown(
             pastilla("Motor Java activo", "ok")
             + pastilla(f"JPMML {estado.version_jpmml}", "info"),
             unsafe_allow_html=True,
         )
+        if not mostrar_diagnostico:
+            return
         with st.expander("Detalle del entorno de ejecución", expanded=False):
             st.write(f"**Runtime:** {estado.version_java or 'no identificado'}")
             st.write(f"**JAVA_HOME:** `{estado.java_home}`")
@@ -179,8 +188,9 @@ def estado_motor(estado) -> None:
             "acabas de añadirlo, reinicia la aplicación desde "
             "**Manage app → ⋮ → Reboot app**."
         )
-        for linea in estado.diagnostico:
-            st.caption(f"• {linea}")
+        if mostrar_diagnostico:
+            for linea in estado.diagnostico:
+                st.caption(f"• {linea}")
 
 
 def vacio(mensaje: str, icono: str = "○") -> None:

@@ -23,6 +23,7 @@ from typing import Callable, Dict, List, Optional
 
 import pandas as pd
 
+from core import jvm
 from core.data_utils import ReporteCasteo, aplicar_esquema
 
 
@@ -129,18 +130,36 @@ def _desambiguar_salidas(
     return df_salida.rename(columns={c: f"{c}_pmml" for c in colisiones})
 
 
+def _es_error_memoria(exc: Exception) -> bool:
+    """Identifica un desbordamiento del heap de la JVM."""
+    texto = f"{type(exc).__name__}: {exc}"
+    return "OutOfMemoryError" in texto or "Java heap space" in texto
+
+
 def puntuar(
     evaluador,
     df: pd.DataFrame,
     tamano_bloque: int = 1_000,
     callback_progreso: Optional[Callable[[int, int], None]] = None,
+    liberar_cada: int = 5,
 ) -> pd.DataFrame:
     """
     Evalua el modelo sobre el DataFrame completo procesando por bloques.
 
-    El bloqueo cumple dos funciones: acota el pico de memoria al serializar
-    hacia la JVM y permite reportar avance en corridas largas, que en carteras
-    de credito pueden ser de cientos de miles de registros.
+    El bloqueo cumple tres funciones: acota el pico de memoria al serializar
+    hacia la JVM, permite reportar avance en corridas largas —que en carteras
+    de credito pueden ser de cientos de miles de registros— y da puntos de
+    control donde liberar memoria.
+
+    Gestion de memoria
+    ------------------
+    Cada bloque genera objetos Java intermedios que quedan inalcanzables al
+    terminar, pero la JVM no los recolecta de inmediato. En un contenedor con
+    heap reducido eso basta para provocar `OutOfMemoryError`. Por eso se fuerza
+    la recoleccion cada `liberar_cada` bloques.
+
+    Si aun asi el heap se desborda, el bloque se reintenta partido a la mitad
+    hasta un minimo razonable, en lugar de abortar toda la corrida.
     """
     orden_entrada = nombres_entrada(evaluador)
     validar_cobertura(df, orden_entrada)
@@ -151,35 +170,66 @@ def puntuar(
 
     tamano_bloque = max(int(tamano_bloque), 1)
     bloques: List[pd.DataFrame] = []
+    contador = 0
 
-    for inicio in range(0, total, tamano_bloque):
-        bloque = df.iloc[inicio : inicio + tamano_bloque]
-        entrada = bloque[orden_entrada]
+    inicio = 0
+    while inicio < total:
+        fin = min(inicio + tamano_bloque, total)
+        bloque = df.iloc[inicio:fin]
 
-        predicciones = evaluador.evaluateAll(entrada)
-        if isinstance(predicciones, pd.Series):
-            predicciones = predicciones.to_frame(name="prediction")
+        try:
+            resultado_bloque = _evaluar_bloque(evaluador, bloque, orden_entrada)
+        except Exception as exc:
+            if not _es_error_memoria(exc) or len(bloque) <= 50:
+                raise
+            # Reintento adaptativo: mitad de tamano y memoria liberada antes.
+            jvm.liberar_memoria_java()
+            gc.collect()
+            tamano_bloque = max(len(bloque) // 2, 50)
+            continue
 
-        predicciones = predicciones.copy()
-        predicciones.index = bloque.index
-        predicciones = _desambiguar_salidas(bloque, predicciones)
-
-        bloques.append(pd.concat([bloque, predicciones], axis=1))
+        bloques.append(resultado_bloque)
+        inicio = fin
+        contador += 1
 
         if callback_progreso is not None:
-            callback_progreso(min(inicio + tamano_bloque, total), total)
+            callback_progreso(min(fin, total), total)
 
-        del bloque, entrada, predicciones
-        gc.collect()
+        del bloque, resultado_bloque
+        if contador % max(liberar_cada, 1) == 0:
+            gc.collect()
+            jvm.liberar_memoria_java()
 
-    return pd.concat(bloques, axis=0)
+    resultado = pd.concat(bloques, axis=0)
+
+    # Se sueltan las referencias intermedias: solo interesa el consolidado.
+    bloques.clear()
+    gc.collect()
+    jvm.liberar_memoria_java()
+
+    return resultado
+
+
+def _evaluar_bloque(evaluador, bloque: pd.DataFrame, orden_entrada: List[str]) -> pd.DataFrame:
+    """Evalua un unico bloque y devuelve entrada + predicciones alineadas."""
+    entrada = bloque[orden_entrada]
+
+    predicciones = evaluador.evaluateAll(entrada)
+    if isinstance(predicciones, pd.Series):
+        predicciones = predicciones.to_frame(name="prediction")
+
+    predicciones = predicciones.copy()
+    predicciones.index = bloque.index
+    predicciones = _desambiguar_salidas(bloque, predicciones)
+
+    return pd.concat([bloque, predicciones], axis=1)
 
 
 def ejecutar_modelo_unico(
     evaluador,
     df_crudo: pd.DataFrame,
     esquema_externo: Optional[Dict[str, str]] = None,
-    tamano_bloque: int = 5_000,
+    tamano_bloque: int = 1_000,
     callback_progreso: Optional[Callable[[int, int], None]] = None,
 ) -> ResultadoScoring:
     """Flujo completo de scoring con un solo modelo: tipar, validar y puntuar."""
@@ -215,7 +265,7 @@ def ejecutar_multimodelo(
     variable_segmento: str,
     evaluadores_por_segmento: Dict[str, object],
     esquema_externo: Optional[Dict[str, str]] = None,
-    tamano_bloque: int = 5_000,
+    tamano_bloque: int = 1_000,
     callback_progreso: Optional[Callable[[str, int, int], None]] = None,
 ) -> ResultadoScoring:
     """

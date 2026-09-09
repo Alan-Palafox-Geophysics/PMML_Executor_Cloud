@@ -19,6 +19,8 @@ Notas de arquitectura
 
 from __future__ import annotations
 
+import gc
+
 import streamlit as st
 
 # La configuracion de pagina debe ser la primera llamada a Streamlit.
@@ -31,6 +33,7 @@ st.set_page_config(
 )
 
 from core import jvm  # noqa: E402
+from core.auth import autenticar, hay_credenciales_configuradas  # noqa: E402
 from ui import components as comp  # noqa: E402
 from ui.tabs import (  # noqa: E402
     tab1_execution,
@@ -58,6 +61,8 @@ def arrancar_motor():
 VALORES_INICIALES = {
     "autenticado": False,
     "usuario": None,
+    "rol": None,
+    "permisos": set(),
     "resultado_scoring": None,
     "matriz_consolidada": None,
     "llave_consolidada": None,
@@ -69,27 +74,6 @@ for clave, valor in VALORES_INICIALES.items():
 # --------------------------------------------------------------------------
 # Autenticación
 # --------------------------------------------------------------------------
-def credenciales_validas(usuario: str, contrasena: str) -> bool:
-    """
-    Valida las credenciales contra `st.secrets`.
-
-    Las credenciales NO viven en el codigo fuente: en la version anterior
-    estaban escritas literalmente en `app.py`, de modo que cualquiera con
-    acceso al repositorio podia leerlas. Aqui se leen de la seccion
-    `[credenciales]` de los secrets de Streamlit.
-    """
-    try:
-        registrados = dict(st.secrets.get("credenciales", {}))
-    except Exception:
-        registrados = {}
-
-    if not registrados:
-        return False
-
-    esperada = registrados.get(usuario.strip())
-    return esperada is not None and str(esperada) == contrasena
-
-
 def pantalla_acceso() -> None:
     """Pantalla de control de acceso."""
     _, centro, _ = st.columns([1, 1.5, 1])
@@ -127,24 +111,23 @@ def pantalla_acceso() -> None:
         st.markdown("</div>", unsafe_allow_html=True)
 
         if enviar:
-            try:
-                hay_secrets = bool(dict(st.secrets.get("credenciales", {})))
-            except Exception:
-                hay_secrets = False
-
-            if not hay_secrets:
+            if not hay_credenciales_configuradas():
                 st.error(
                     "No hay credenciales configuradas. En Streamlit Cloud, "
-                    "abre **Manage app → Settings → Secrets** y añade una "
-                    "sección `[credenciales]`. En local, crea el archivo "
+                    "abre **Manage app → Settings → Secrets** y añade la "
+                    "sección `[usuarios]`. En local, crea el archivo "
                     "`.streamlit/secrets.toml`."
                 )
-            elif credenciales_validas(usuario, contrasena):
-                st.session_state.autenticado = True
-                st.session_state.usuario = usuario.strip()
-                st.rerun()
             else:
-                st.error("Usuario o contraseña incorrectos.")
+                identidad = autenticar(usuario, contrasena)
+                if identidad is not None:
+                    st.session_state.autenticado = True
+                    st.session_state.usuario = identidad
+                    st.session_state.rol = identidad.rol
+                    st.session_state.permisos = identidad.permisos
+                    st.rerun()
+                else:
+                    st.error("Usuario o contraseña incorrectos.")
 
 
 if not st.session_state.autenticado:
@@ -199,8 +182,34 @@ with st.sidebar:
     if st.session_state.matriz_consolidada is not None:
         st.caption(f"Matriz consolidada: {len(st.session_state.matriz_consolidada):,} filas")
 
+    # ------------------------------------------------------ memoria de la JVM
+    if estado_jvm.disponible:
+        memoria = jvm.memoria_java()
+        if memoria:
+            st.markdown("**Memoria del motor Java**")
+            st.progress(
+                min(memoria["uso_pct"] / 100.0, 1.0),
+                text=f"{memoria['en_uso_mb']} / {memoria['maxima_mb']} MB "
+                     f"({memoria['uso_pct']}%)",
+            )
+            if memoria["uso_pct"] > 80:
+                st.caption(
+                    "Uso elevado. Libera memoria o reduce el tamaño de bloque "
+                    "antes de lanzar una corrida grande."
+                )
+
+        if st.button("Liberar memoria", use_container_width=True,
+                     help="Vacía la caché de modelos y fuerza la recolección "
+                          "de basura en la JVM. Los resultados ya calculados "
+                          "se conservan."):
+            tab1_execution.liberar_cache_modelos()
+            gc.collect()
+            st.rerun()
+
     st.markdown("---")
-    st.caption(f"Sesión: **{st.session_state.usuario}**")
+    identidad = st.session_state.usuario
+    st.caption(f"Sesión: **{identidad.id}**")
+    st.caption(f"Perfil: **{identidad.etiqueta_rol}**")
     if st.button("Cerrar sesión", use_container_width=True):
         for clave in VALORES_INICIALES:
             st.session_state[clave] = VALORES_INICIALES[clave]
@@ -215,7 +224,7 @@ comp.cabecera(
 )
 
 if not estado_jvm.disponible:
-    comp.estado_motor(estado_jvm)
+    comp.estado_motor(estado_jvm, mostrar_diagnostico=True)
 
 pestanas = st.tabs([
     "Ejecución de modelos",
@@ -225,7 +234,7 @@ pestanas = st.tabs([
 ])
 
 with pestanas[0]:
-    tab1_execution.render(submodulo, estado_jvm)
+    tab1_execution.render(submodulo, estado_jvm, st.session_state.usuario)
 
 with pestanas[1]:
     tab2_consolidation.render()

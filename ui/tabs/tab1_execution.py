@@ -44,7 +44,7 @@ from ui.theme import AZUL_NUCLEO
 # --------------------------------------------------------------------------
 # Cache de evaluadores
 # --------------------------------------------------------------------------
-@st.cache_resource(show_spinner=False, max_entries=12)
+@st.cache_resource(show_spinner=False, max_entries=3)
 def _evaluador_cacheado(huella: str, contenido: bytes):
     """
     Construye el evaluador una sola vez por modelo.
@@ -52,8 +52,19 @@ def _evaluador_cacheado(huella: str, contenido: bytes):
     La clave es el hash del contenido, de modo que volver a subir el mismo
     archivo reutiliza el evaluador ya inicializado en la JVM. Sin esta caché,
     cada interacción de Streamlit reconstruiría el modelo desde cero.
+
+    `max_entries` es deliberadamente bajo: cada evaluador retiene su modelo
+    completo en el heap de la JVM, y un ensamble grande puede ocupar cientos de
+    megabytes. Cachear muchos modelos a la vez agota el heap y provoca
+    `OutOfMemoryError` incluso antes de empezar a puntuar.
     """
     return jvm.construir_evaluador(contenido)
+
+
+def liberar_cache_modelos() -> None:
+    """Vacía la caché de evaluadores y fuerza la recolección en la JVM."""
+    _evaluador_cacheado.clear()
+    jvm.liberar_memoria_java()
 
 
 def obtener_evaluador(contenido: bytes):
@@ -237,13 +248,16 @@ def _documento_markdown(nombre, metadatos, codigo_mermaid: str) -> str:
 # --------------------------------------------------------------------------
 # 1.2 Scoring de modelo único
 # --------------------------------------------------------------------------
-def _modulo_scoring_unico(estado_jvm) -> None:
+def _modulo_scoring_unico(estado_jvm, usuario) -> None:
     comp.seccion("1.2", "Scoring con modelo único",
                  "Evaluación de un PMML sobre un dataset")
 
     if not estado_jvm.disponible:
-        comp.estado_motor(estado_jvm)
+        comp.estado_motor(estado_jvm, mostrar_diagnostico=usuario.puede("diagnostico"))
         return
+
+    if usuario.puede("diagnostico"):
+        comp.estado_motor(estado_jvm, mostrar_diagnostico=True)
 
     col_a, col_b = st.columns(2)
     with col_a:
@@ -264,7 +278,7 @@ def _modulo_scoring_unico(estado_jvm) -> None:
         with col_d:
             tamano_bloque = st.number_input(
                 "Tamaño de bloque", min_value=500, max_value=100_000,
-                value=5_000, step=500,
+                value=1_000, step=500,
                 help="Registros enviados por lote a la JVM. Bloques menores "
                      "reducen el consumo de memoria.",
             )
@@ -320,12 +334,12 @@ def _modulo_scoring_unico(estado_jvm) -> None:
 # --------------------------------------------------------------------------
 # 1.3 Scoring multimodelo
 # --------------------------------------------------------------------------
-def _modulo_scoring_multiple(estado_jvm) -> None:
+def _modulo_scoring_multiple(estado_jvm, usuario) -> None:
     comp.seccion("1.3", "Scoring multimodelo por segmento",
                  "Enrutamiento de registros a modelos especializados")
 
     if not estado_jvm.disponible:
-        comp.estado_motor(estado_jvm)
+        comp.estado_motor(estado_jvm, mostrar_diagnostico=usuario.puede("diagnostico"))
         return
 
     st.caption(
@@ -390,7 +404,7 @@ def _modulo_scoring_multiple(estado_jvm) -> None:
     with st.expander("Opciones avanzadas", expanded=False):
         tamano_bloque = st.number_input(
             "Tamaño de bloque", min_value=500, max_value=100_000,
-            value=5_000, step=500, key="multi_bloque",
+            value=1_000, step=500, key="multi_bloque",
         )
 
     completo = bool(mapeo) and len(modelos_cargados) == len(mapeo)
@@ -523,10 +537,10 @@ def _mostrar_resultado(resultado, nombre_base: str, referencia: str) -> None:
 
 
 # --------------------------------------------------------------------------
-def render(submodulo: str, estado_jvm) -> None:
+def render(submodulo: str, estado_jvm, usuario) -> None:
     if submodulo.startswith("1.1"):
         _modulo_metadata()
     elif submodulo.startswith("1.2"):
-        _modulo_scoring_unico(estado_jvm)
+        _modulo_scoring_unico(estado_jvm, usuario)
     else:
-        _modulo_scoring_multiple(estado_jvm)
+        _modulo_scoring_multiple(estado_jvm, usuario)

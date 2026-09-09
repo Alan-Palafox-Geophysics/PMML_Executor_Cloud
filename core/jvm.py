@@ -55,6 +55,7 @@ class EstadoJVM:
     java_home: Optional[str] = None
     version_java: Optional[str] = None
     version_jpmml: Optional[str] = None
+    heap_maximo_mb: Optional[int] = None
     detalle_error: Optional[str] = None
     diagnostico: list[str] = field(default_factory=list)
 
@@ -136,6 +137,61 @@ def _leer_version_java(java_home: str) -> Optional[str]:
         return None
 
 
+def _memoria_total_mb() -> int:
+    """RAM total del contenedor, leida de /proc/meminfo."""
+    try:
+        with open("/proc/meminfo", "r", encoding="utf-8") as fichero:
+            for linea in fichero:
+                if linea.startswith("MemTotal:"):
+                    return int(linea.split()[1]) // 1024
+    except Exception:
+        pass
+    return 1024  # Supuesto conservador: plan gratuito de Streamlit Cloud.
+
+
+def heap_objetivo_mb() -> int:
+    """
+    Calcula el tamano maximo del heap de la JVM.
+
+    Sin un `-Xmx` explicito, la JVM se autoasigna 1/4 de la RAM fisica. En un
+    contenedor de 1 GB eso son unos 256 MB, insuficiente para evaluar lotes
+    grandes: de ahi el `OutOfMemoryError: Java heap space`.
+
+    Tampoco conviene subirlo sin limite. Python y pandas comparten la misma
+    memoria del contenedor, y si la JVM se la come el proceso entero muere por
+    OOM del sistema operativo, que es peor: en lugar de una excepcion
+    recuperable, la aplicacion se reinicia y se pierde la sesion.
+
+    Se reserva por tanto en torno al 45% de la RAM, dejando el resto para el
+    dataframe de pandas y el propio runtime.
+    """
+    override = os.environ.get("PMML_JVM_HEAP_MB", "").strip()
+    if override.isdigit():
+        return max(int(override), 128)
+
+    total = _memoria_total_mb()
+    return max(256, min(int(total * 0.45), 2048))
+
+
+def _opciones_jvm() -> list[str]:
+    """Parametros de arranque de la JVM ajustados a un contenedor pequeno."""
+    heap = heap_objetivo_mb()
+    return [
+        f"-Xmx{heap}m",
+        "-Xms64m",
+        # SerialGC tiene mucha menos huella que G1 en heaps pequenos: G1
+        # reserva estructuras auxiliares que en 256-512 MB pesan demasiado.
+        "-XX:+UseSerialGC",
+        # Evita que el metaspace crezca sin control al cargar muchos modelos.
+        "-XX:MaxMetaspaceSize=192m",
+        # Pila mas pequena por hilo: los evaluadores PMML no recursan hondo.
+        "-Xss512k",
+        # Devuelve memoria libre al sistema operativo en lugar de retenerla.
+        "-XX:+ShrinkHeapInSteps",
+        "-Djava.awt.headless=true",
+    ]
+
+
 def iniciar_jvm() -> EstadoJVM:
     """
     Arranca la JVM de forma idempotente y devuelve un estado inspeccionable.
@@ -168,19 +224,33 @@ def iniciar_jvm() -> EstadoJVM:
             import jpype  # noqa: PLC0415  (import diferido intencional)
             import jpmml_evaluator  # noqa: PLC0415
 
-            if not jpype.isJVMStarted():
-                from jpmml_evaluator.jpype import JPypeBackend  # noqa: PLC0415
+            heap = heap_objetivo_mb()
 
-                JPypeBackend.ensureJVM()
-                diagnostico.append("JVM arrancada por JPype (backend embebido).")
+            if not jpype.isJVMStarted():
+                # La JVM se arranca aqui, no en `JPypeBackend.ensureJVM()`, que
+                # la crearia sin parametros de memoria. Se replica su classpath
+                # para que los JAR de JPMML sigan disponibles.
+                from jpmml_evaluator import _classpath  # noqa: PLC0415
+
+                jpype.startJVM(*_opciones_jvm(), classpath=_classpath(user_classpath=[]))
+                diagnostico.append(
+                    f"JVM arrancada con heap maximo de {heap} MB "
+                    f"(RAM del contenedor: {_memoria_total_mb()} MB)."
+                )
             else:
                 diagnostico.append("JVM ya estaba activa; se reutiliza la instancia.")
+
+            # Deja el backend listo (importa las clases auxiliares de JPMML).
+            from jpmml_evaluator.jpype import JPypeBackend  # noqa: PLC0415
+
+            JPypeBackend.ensureJVM()
 
             return EstadoJVM(
                 disponible=True,
                 java_home=java_home,
                 version_java=_leer_version_java(java_home),
                 version_jpmml=getattr(jpmml_evaluator, "__version__", "0.16.0"),
+                heap_maximo_mb=heap,
                 diagnostico=diagnostico,
             )
         except Exception as exc:  # pragma: no cover - depende del entorno
@@ -191,6 +261,50 @@ def iniciar_jvm() -> EstadoJVM:
                 detalle_error=str(exc),
                 diagnostico=diagnostico,
             )
+
+
+def memoria_java() -> Optional[dict]:
+    """
+    Estado actual del heap de la JVM, en MB.
+
+    Permite mostrar el consumo real en la interfaz en lugar de esperar a que
+    reviente con un OutOfMemoryError.
+    """
+    try:
+        import jpype  # noqa: PLC0415
+
+        if not jpype.isJVMStarted():
+            return None
+        runtime = jpype.JClass("java.lang.Runtime").getRuntime()
+        maxima = int(runtime.maxMemory()) // (1024 * 1024)
+        total = int(runtime.totalMemory()) // (1024 * 1024)
+        libre = int(runtime.freeMemory()) // (1024 * 1024)
+        return {
+            "maxima_mb": maxima,
+            "reservada_mb": total,
+            "en_uso_mb": total - libre,
+            "uso_pct": round(100.0 * (total - libre) / max(maxima, 1), 1),
+        }
+    except Exception:
+        return None
+
+
+def liberar_memoria_java() -> bool:
+    """
+    Solicita a la JVM que recolecte los objetos ya inalcanzables.
+
+    `System.gc()` es una sugerencia, no una orden, pero tras procesar un lote
+    grande libera de forma fiable las estructuras intermedias del evaluador.
+    """
+    try:
+        import jpype  # noqa: PLC0415
+
+        if not jpype.isJVMStarted():
+            return False
+        jpype.JClass("java.lang.System").gc()
+        return True
+    except Exception:
+        return False
 
 
 def hash_contenido(datos: bytes) -> str:
